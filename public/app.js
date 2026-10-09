@@ -189,14 +189,15 @@ function render() {
   const turnPlayer = table.players[table.turn];
   $('table-info').textContent = `${table.players.length}/${table.maxPlayers} 人在桌 · ${table.phase}`;
   $('join').disabled = Boolean(me);
-  $('join').textContent = me ? '已入座（刷新可恢复）' : '入座（500 积分）';
+  $('join').textContent = me ? '已入座（刷新可恢复）' : '入座（1000 积分）';
   $('leave').hidden = !me;
   $('leave').disabled = Boolean(me?.leaveAfterHand);
   $('leave').textContent = me?.leaveAfterHand ? '已预约：本局结束后下桌' : '本局结束后下桌';
   $('seat-status').textContent = seatLobby ? '你已离桌，请重新入座后继续游戏。' : '';
   $('game-area').hidden = seatLobby;
   $('message').textContent = table.message;
-  $('pot').textContent = `底池 ${table.pot}`;
+  const potLabels = table.potBreakdown?.length ? table.potBreakdown.map((pot, index) => `${index ? `边池 ${index}` : '主池'} ${pot.amount}`).join(' · ') : `底池 ${table.pot}`;
+  $('pot').textContent = potLabels;
   $('board').innerHTML = table.board.length ? table.board.map(card).join('') : '<span class="empty-board">公共牌将在翻牌圈出现</span>';
   $('turn-status').innerHTML = table.resultDeadline ? '<span class="turn-label" id="result-clock"></span>' : turnPlayer ? '' : '<span class="turn-label">等待发牌</span>';
   $('players').innerHTML = table.players.map((player, index) => {
@@ -204,10 +205,11 @@ function render() {
     const seat = seatLayouts[table.players.length][relativeIndex];
     const timeoutInfo = player.timeoutStreak ? `超时 ${player.timeoutStreak}/3 · ` : '';
     const status = player.disconnectedAt ? '重连中（保留座位）' : player.leaveAfterHand ? '本局结束后下桌' : player.folded ? '已弃牌' : player.inHand ? `本轮 ${player.roundBet}` : '等待中';
+    const handStrength = player.handName ? `<div class="hand-strength">牌力：${player.handName}</div>` : '';
     const showdownCards = player.cards?.length && table.showdownPlayerIds?.includes(player.userId) ? `<div class="showdown-cards" aria-label="${player.username} 的摊牌">${player.cards.map(card).join('')}</div>` : '';
-    return `<article class="player seat-${seat} ${table.turn === index ? 'turn' : ''} ${player.folded ? 'folded' : ''} ${player.disconnectedAt ? 'offline' : ''}">${table.turn === index ? '<strong class="seat-timer" id="turn-clock"></strong>' : ''}<div class="avatar">${player.username.slice(0, 1).toUpperCase()}</div><div><b>${player.username}</b>${table.dealer === index ? '<span class="dealer">D</span>' : ''}<div class="stack">● ${player.stack}</div><small>${timeoutInfo}${status}</small></div>${showdownCards}</article>`;
+    return `<article class="player seat-${seat} ${table.turn === index ? 'turn' : ''} ${player.folded ? 'folded' : ''} ${player.disconnectedAt ? 'offline' : ''}">${table.turn === index ? '<strong class="seat-timer" id="turn-clock"></strong>' : ''}<div class="avatar">${player.username.slice(0, 1).toUpperCase()}</div><div><b>${player.username}</b>${table.dealer === index ? '<span class="dealer">D</span>' : ''}<div class="stack">● ${player.stack}</div><small>${timeoutInfo}${status}</small>${handStrength}</div>${showdownCards}</article>`;
   }).join('');
-  $('self').innerHTML = me ? `<div><span>你的筹码</span><b class="my-stack">${me.stack}</b></div><div class="cards hand">${(me.cards || []).map(card).join('') || '<span>等待发牌</span>'}</div>` : '<span>入座后即可看到你的手牌</span>';
+  $('self').innerHTML = me ? `<div><span>你的筹码</span><b class="my-stack">${me.stack}</b>${me.handName ? `<div class="hand-strength">牌力：${me.handName}</div>` : ''}</div><div class="cards hand">${(me.cards || []).map(card).join('') || '<span>等待发牌</span>'}</div>` : '<span>入座后即可看到你的手牌</span>';
   $('actions').innerHTML = actionControls(me);
   updateCountdown();
 }

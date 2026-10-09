@@ -9,7 +9,7 @@ const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 80;
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-local-secret';
-const BUY_IN = 500;
+const BUY_IN = 1000;
 const STARTING_POINTS = 3000;
 const TURN_TIMEOUT_MS = 25_000;
 const RESULT_DISPLAY_MS = 10_000;
@@ -97,14 +97,52 @@ const scoreFive = cards => {
 const bestScore = cards => combinations(cards, 5).map(scoreFive).sort(compareScore).at(-1);
 const compareScore = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length); i += 1) { if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) - (b[i] || 0); } return 0; };
 const handName = ['高牌', '一对', '两对', '三条', '顺子', '同花', '葫芦', '四条', '同花顺'];
+const currentHandName = cards => {
+  if (cards.length >= 5) return handName[bestScore(cards)[0]];
+  const counts = [...new Map(cards.map(card => [card.rank, cards.filter(other => other.rank === card.rank).length])).values()].sort((a, b) => b - a);
+  if (counts[0] === 4) return '四条';
+  if (counts[0] === 3) return '三条';
+  if (counts[0] === 2 && counts[1] === 2) return '两对';
+  if (counts[0] === 2) return '一对';
+  return '高牌';
+};
 
 const tables = new Map();
 const defaultTable = { id: 'main', name: '新手牌桌', smallBlind: 10, bigBlind: 20, maxPlayers: 8, players: [], spectators: new Set(), phase: 'waiting', board: [], pot: 0, dealer: -1, turn: -1, deck: [], turnTimer: null, turnDeadline: null, resultTimer: null, resultDeadline: null, showdownPlayerIds: [], message: '等待至少两位玩家入座' };
 tables.set(defaultTable.id, defaultTable);
 const persist = table => { const { turnTimer, resultTimer, ...snapshot } = table; db.prepare('INSERT INTO game_snapshots(table_id,snapshot,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(table_id) DO UPDATE SET snapshot=excluded.snapshot,updated_at=CURRENT_TIMESTAMP').run(table.id, JSON.stringify({ ...snapshot, spectators: undefined, players: table.players.map(({ socket, reconnectTimer, ...player }) => player) })); };
-const publicTable = (table, userId) => { const { turnTimer, resultTimer, ...state } = table; return { ...state, deck: undefined, spectators: undefined, players: table.players.map(({ socket, reconnectTimer, cards, ...p }) => ({ ...p, cards: (p.userId === userId && p.inHand) || table.showdownPlayerIds?.includes(p.userId) ? cards : undefined })) }; };
+const publicTable = (table, userId) => {
+  const { turnTimer, resultTimer, ...state } = table;
+  return {
+    ...state,
+    deck: undefined,
+    spectators: undefined,
+    potBreakdown: calculatePots(table).map(({ amount }) => ({ amount })),
+    players: table.players.map(({ socket, reconnectTimer, cards, handName: revealedHandName, ...p }) => {
+      const isSelf = p.userId === userId && p.inHand;
+      const isShowdown = table.showdownPlayerIds?.includes(p.userId);
+      return { ...p, cards: isSelf || isShowdown ? cards : undefined, handName: isShowdown ? revealedHandName : isSelf && table.phase !== 'waiting' ? currentHandName([...cards, ...table.board]) : undefined };
+    }),
+  };
+};
 const broadcast = table => { persist(table); for (const client of [...table.players, ...table.spectators]) if (client.socket?.readyState === 1) client.socket.send(JSON.stringify({ type: 'state', table: publicTable(table, client.userId) })); };
 const activePlayers = table => table.players.filter(p => p.inHand && !p.folded);
+function calculatePots(table) {
+  const levels = [...new Set(table.players.map(player => player.totalBet || 0).filter(Boolean))].sort((a, b) => a - b);
+  let previous = 0;
+  const tiers = levels.map(level => {
+    const contributors = table.players.filter(player => (player.totalBet || 0) >= level);
+    const amount = (level - previous) * contributors.length;
+    previous = level;
+    return { amount, eligibleUserIds: contributors.filter(player => player.inHand && !player.folded).map(player => player.userId) };
+  }).filter(pot => pot.amount > 0);
+  return tiers.reduce((pots, tier) => {
+    const previousPot = pots.at(-1);
+    if (previousPot && previousPot.eligibleUserIds.join(',') === tier.eligibleUserIds.join(',')) previousPot.amount += tier.amount;
+    else pots.push(tier);
+    return pots;
+  }, []);
+}
 const nextIndex = (table, from, predicate) => { for (let i = 1; i <= table.players.length; i += 1) { const index = (from + i) % table.players.length; if (predicate(table.players[index])) return index; } return -1; };
 const logHand = (table, event) => db.prepare('INSERT INTO hand_logs(table_id,payload) VALUES(?,?)').run(table.id, JSON.stringify({ event, phase: table.phase, pot: table.pot, at: new Date().toISOString() }));
 const clearTurnTimer = table => { if (table.turnTimer) clearTimeout(table.turnTimer); table.turnTimer = null; table.turnDeadline = null; };
@@ -115,6 +153,7 @@ function scheduleResultCompletion(table) {
     table.resultTimer = null;
     table.resultDeadline = null;
     table.showdownPlayerIds = [];
+    table.players.forEach(player => { player.handName = null; });
     removeQueuedLeavers(table);
     broadcast(table);
   }, delay);
@@ -163,7 +202,7 @@ function startHand(table) {
   }
   if (table.resultDeadline) throw new Error('正在展示上一局结果，请稍候');
   table.deck = makeDeck(); table.board = []; table.pot = 0; table.phase = 'preflop'; table.resultDeadline = null; table.showdownPlayerIds = []; table.message = '翻牌前下注';
-  table.players.forEach(p => Object.assign(p, { cards: [table.deck.pop(), table.deck.pop()], inHand: p.stack > 0, folded: false, roundBet: 0, totalBet: 0, acted: false }));
+  table.players.forEach(p => Object.assign(p, { cards: [table.deck.pop(), table.deck.pop()], inHand: p.stack > 0, folded: false, roundBet: 0, totalBet: 0, acted: false, handName: null }));
   postBlinds(table); scheduleTurnTimer(table); logHand(table, 'start'); broadcast(table);
 }
 function revealNext(table) {
@@ -177,11 +216,24 @@ function revealNext(table) {
 }
 function showdown(table) {
   clearTurnTimer(table);
-  const contenders = activePlayers(table); const scored = contenders.map(p => ({ p, score: bestScore([...p.cards, ...table.board]) })); const high = scored.map(x => x.score).sort(compareScore).at(-1); const winners = scored.filter(x => compareScore(x.score, high) === 0).map(x => x.p);
-  const share = Math.floor(table.pot / winners.length); winners.forEach(p => { p.stack += share; }); const remainder = table.pot - share * winners.length; if (remainder) winners[0].stack += remainder;
-  table.message = `${winners.map(p => p.username).join('、')} 获胜（${handName[high[0]]}），赢得 ${table.pot} 积分`;
+  const contenders = activePlayers(table);
+  const scored = contenders.map(p => ({ p, score: bestScore([...p.cards, ...table.board]) }));
+  scored.forEach(({ p, score }) => { p.handName = handName[score[0]]; });
+  const scoreByUserId = new Map(scored.map(item => [item.p.userId, item]));
+  const payoutSummary = calculatePots(table).map((pot, index) => {
+    const eligible = pot.eligibleUserIds.map(userId => scoreByUserId.get(userId)).filter(Boolean);
+    const high = eligible.map(item => item.score).sort(compareScore).at(-1);
+    const winners = eligible.filter(item => compareScore(item.score, high) === 0).map(item => item.p);
+    const share = Math.floor(pot.amount / winners.length);
+    winners.forEach(player => { player.stack += share; });
+    const remainder = pot.amount - share * winners.length;
+    const orderFromDealer = [...winners].sort((a, b) => (table.players.indexOf(a) - table.dealer - 1 + table.players.length) % table.players.length - (table.players.indexOf(b) - table.dealer - 1 + table.players.length) % table.players.length);
+    orderFromDealer.slice(0, remainder).forEach(player => { player.stack += 1; });
+    return `${index ? `边池 ${index}` : '主池'} ${pot.amount}：${winners.map(player => player.username).join('、')}（${handName[high[0]]}）`;
+  });
+  table.message = payoutSummary.join('；');
   table.showdownPlayerIds = contenders.map(p => p.userId);
-  table.phase = 'waiting'; table.turn = -1; beginResultDisplay(table); logHand(table, { winners: winners.map(p => p.username), score: handName[high[0]] }); broadcast(table);
+  table.phase = 'waiting'; table.turn = -1; beginResultDisplay(table); logHand(table, { pots: payoutSummary }); broadcast(table);
 }
 function settleIfNeeded(table) {
   const alive = activePlayers(table); if (alive.length === 0) { clearTurnTimer(table); table.phase = 'waiting'; table.turn = -1; table.message = '牌局因所有玩家离桌而结束'; table.pot = 0; beginResultDisplay(table); broadcast(table); return true; }
