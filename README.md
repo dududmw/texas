@@ -7,7 +7,9 @@ npm install
 npm start
 ```
 
-打开 `http://localhost:3000`。同一局域网内可用运行机器的 IP 加端口访问。
+打开 `http://localhost`。同一局域网内可用运行机器的 IP 访问。
+
+默认端口为 `80`；若系统限制普通用户绑定低端口，可临时使用 `PORT=3000 npm start`。
 
 ## 包含功能
 
