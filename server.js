@@ -12,6 +12,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'change-this-local-secret';
 const BUY_IN = 500;
 const STARTING_POINTS = 3000;
 const TURN_TIMEOUT_MS = 25_000;
+const RESULT_DISPLAY_MS = 10_000;
 const RECONNECT_GRACE_MS = 60_000;
 const WS_HEARTBEAT_MS = 30_000;
 const db = new Database(path.join(__dirname, 'texas.sqlite'));
@@ -98,15 +99,30 @@ const compareScore = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length
 const handName = ['高牌', '一对', '两对', '三条', '顺子', '同花', '葫芦', '四条', '同花顺'];
 
 const tables = new Map();
-const defaultTable = { id: 'main', name: '新手牌桌', smallBlind: 10, bigBlind: 20, maxPlayers: 8, players: [], spectators: new Set(), phase: 'waiting', board: [], pot: 0, dealer: -1, turn: -1, deck: [], turnTimer: null, turnDeadline: null, message: '等待至少两位玩家入座' };
+const defaultTable = { id: 'main', name: '新手牌桌', smallBlind: 10, bigBlind: 20, maxPlayers: 8, players: [], spectators: new Set(), phase: 'waiting', board: [], pot: 0, dealer: -1, turn: -1, deck: [], turnTimer: null, turnDeadline: null, resultTimer: null, resultDeadline: null, showdownPlayerIds: [], message: '等待至少两位玩家入座' };
 tables.set(defaultTable.id, defaultTable);
-const persist = table => { const { turnTimer, ...snapshot } = table; db.prepare('INSERT INTO game_snapshots(table_id,snapshot,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(table_id) DO UPDATE SET snapshot=excluded.snapshot,updated_at=CURRENT_TIMESTAMP').run(table.id, JSON.stringify({ ...snapshot, spectators: undefined, players: table.players.map(({ socket, reconnectTimer, ...player }) => player) })); };
-const publicTable = (table, userId) => { const { turnTimer, ...state } = table; return { ...state, deck: undefined, spectators: undefined, players: table.players.map(({ socket, reconnectTimer, cards, ...p }) => ({ ...p, cards: (p.userId === userId && p.inHand) || (table.phase === 'waiting' && table.board.length === 5) ? cards : undefined })) }; };
+const persist = table => { const { turnTimer, resultTimer, ...snapshot } = table; db.prepare('INSERT INTO game_snapshots(table_id,snapshot,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(table_id) DO UPDATE SET snapshot=excluded.snapshot,updated_at=CURRENT_TIMESTAMP').run(table.id, JSON.stringify({ ...snapshot, spectators: undefined, players: table.players.map(({ socket, reconnectTimer, ...player }) => player) })); };
+const publicTable = (table, userId) => { const { turnTimer, resultTimer, ...state } = table; return { ...state, deck: undefined, spectators: undefined, players: table.players.map(({ socket, reconnectTimer, cards, ...p }) => ({ ...p, cards: (p.userId === userId && p.inHand) || table.showdownPlayerIds?.includes(p.userId) ? cards : undefined })) }; };
 const broadcast = table => { persist(table); for (const client of [...table.players, ...table.spectators]) if (client.socket?.readyState === 1) client.socket.send(JSON.stringify({ type: 'state', table: publicTable(table, client.userId) })); };
 const activePlayers = table => table.players.filter(p => p.inHand && !p.folded);
 const nextIndex = (table, from, predicate) => { for (let i = 1; i <= table.players.length; i += 1) { const index = (from + i) % table.players.length; if (predicate(table.players[index])) return index; } return -1; };
 const logHand = (table, event) => db.prepare('INSERT INTO hand_logs(table_id,payload) VALUES(?,?)').run(table.id, JSON.stringify({ event, phase: table.phase, pot: table.pot, at: new Date().toISOString() }));
 const clearTurnTimer = table => { if (table.turnTimer) clearTimeout(table.turnTimer); table.turnTimer = null; table.turnDeadline = null; };
+function scheduleResultCompletion(table) {
+  if (table.resultTimer) clearTimeout(table.resultTimer);
+  const delay = Math.max(0, (table.resultDeadline || Date.now()) - Date.now());
+  table.resultTimer = setTimeout(() => {
+    table.resultTimer = null;
+    table.resultDeadline = null;
+    table.showdownPlayerIds = [];
+    removeQueuedLeavers(table);
+    broadcast(table);
+  }, delay);
+}
+function beginResultDisplay(table) {
+  table.resultDeadline = Date.now() + RESULT_DISPLAY_MS;
+  scheduleResultCompletion(table);
+}
 const restorePlayerConnection = (player, socket) => {
   if (player.reconnectTimer) clearTimeout(player.reconnectTimer);
   player.reconnectTimer = null;
@@ -145,7 +161,8 @@ function startHand(table) {
     if (kickedPlayers.length) broadcast(table);
     throw new Error('至少两位有积分的玩家才能开始');
   }
-  table.deck = makeDeck(); table.board = []; table.pot = 0; table.phase = 'preflop'; table.message = '翻牌前下注';
+  if (table.resultDeadline) throw new Error('正在展示上一局结果，请稍候');
+  table.deck = makeDeck(); table.board = []; table.pot = 0; table.phase = 'preflop'; table.resultDeadline = null; table.showdownPlayerIds = []; table.message = '翻牌前下注';
   table.players.forEach(p => Object.assign(p, { cards: [table.deck.pop(), table.deck.pop()], inHand: p.stack > 0, folded: false, roundBet: 0, totalBet: 0, acted: false }));
   postBlinds(table); scheduleTurnTimer(table); logHand(table, 'start'); broadcast(table);
 }
@@ -163,14 +180,28 @@ function showdown(table) {
   const contenders = activePlayers(table); const scored = contenders.map(p => ({ p, score: bestScore([...p.cards, ...table.board]) })); const high = scored.map(x => x.score).sort(compareScore).at(-1); const winners = scored.filter(x => compareScore(x.score, high) === 0).map(x => x.p);
   const share = Math.floor(table.pot / winners.length); winners.forEach(p => { p.stack += share; }); const remainder = table.pot - share * winners.length; if (remainder) winners[0].stack += remainder;
   table.message = `${winners.map(p => p.username).join('、')} 获胜（${handName[high[0]]}），赢得 ${table.pot} 积分`;
-  table.phase = 'waiting'; table.turn = -1; logHand(table, { winners: winners.map(p => p.username), score: handName[high[0]] }); broadcast(table);
+  table.showdownPlayerIds = contenders.map(p => p.userId);
+  table.phase = 'waiting'; table.turn = -1; beginResultDisplay(table); logHand(table, { winners: winners.map(p => p.username), score: handName[high[0]] }); broadcast(table);
 }
 function settleIfNeeded(table) {
-  const alive = activePlayers(table); if (alive.length === 0) { clearTurnTimer(table); table.phase = 'waiting'; table.turn = -1; table.message = '牌局因所有玩家离桌而结束'; table.pot = 0; broadcast(table); return true; }
-  if (alive.length === 1) { clearTurnTimer(table); alive[0].stack += table.pot; table.message = `${alive[0].username} 获胜，赢得 ${table.pot} 积分`; table.phase = 'waiting'; table.turn = -1; logHand(table, 'all folded'); broadcast(table); return true; }
+  const alive = activePlayers(table); if (alive.length === 0) { clearTurnTimer(table); table.phase = 'waiting'; table.turn = -1; table.message = '牌局因所有玩家离桌而结束'; table.pot = 0; beginResultDisplay(table); broadcast(table); return true; }
+  if (alive.length === 1) { clearTurnTimer(table); alive[0].stack += table.pot; table.message = `${alive[0].username} 获胜，赢得 ${table.pot} 积分`; table.phase = 'waiting'; table.turn = -1; beginResultDisplay(table); logHand(table, 'all folded'); broadcast(table); return true; }
   const pending = alive.some(p => p.stack > 0 && (!p.acted || p.roundBet !== Math.max(...alive.map(x => x.roundBet)))); if (!pending) { revealNext(table); return true; } return false;
 }
 function act(table, userId, action, amount, options = {}) {
+  if (action === 'leave_after_hand') {
+    const player = table.players.find(p => p.userId === userId);
+    if (!player) throw new Error('你尚未入座');
+    if (table.phase === 'waiting' && !table.resultDeadline) {
+      if (player.socket?.readyState === 1) player.socket.send(JSON.stringify({ type: 'left_table' }));
+      leaveTable(table, player);
+      return broadcast(table);
+    }
+    player.leaveAfterHand = true;
+    if (!table.resultDeadline) table.message = `${player.username} 将在本局结束后下桌`;
+    logHand(table, { user: player.username, action });
+    return broadcast(table);
+  }
   if (table.phase === 'waiting') { if (action === 'start') return startHand(table); throw new Error('当前未在牌局中'); }
   const player = table.players[table.turn]; if (!player || player.userId !== userId) throw new Error('还没轮到你');
   const maxBet = Math.max(...activePlayers(table).map(p => p.roundBet)); const call = maxBet - player.roundBet;
@@ -195,6 +226,12 @@ function leaveTable(table, player) {
   table.players = table.players.filter(p => p !== player);
   if (leavingIndex < table.turn) table.turn -= 1;
   if (wasTurn && table.phase !== 'waiting') table.turn = nextIndex(table, leavingIndex - 1, p => p.inHand && !p.folded && p.stack > 0);
+}
+function removeQueuedLeavers(table) {
+  table.players.filter(player => player.leaveAfterHand).forEach(player => {
+    if (player.socket?.readyState === 1) player.socket.send(JSON.stringify({ type: 'left_table' }));
+    leaveTable(table, player);
+  });
 }
 function scheduleReconnectExpiry(table, player) {
   if (player.reconnectTimer) clearTimeout(player.reconnectTimer);
@@ -222,9 +259,11 @@ function restoreTableFromDatabase(table) {
       spectators: new Set(),
       turnTimer: null,
       turnDeadline: null,
+      resultTimer: null,
       players: saved.players.map(player => ({ ...player, socket: null, reconnectTimer: null, disconnectedAt: Date.now() })),
     });
     table.players.forEach(player => scheduleReconnectExpiry(table, player));
+    if (table.resultDeadline) scheduleResultCompletion(table);
     if (table.phase !== 'waiting') scheduleTurnTimer(table);
   } catch (error) { console.error('Failed to restore saved table', error); }
 }

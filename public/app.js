@@ -12,6 +12,8 @@ let musicTimer;
 let musicEnabled = false;
 let musicStep = 0;
 let musicMaster;
+let wasSeated = false;
+let seatLobby = false;
 
 const card = value => {
   if (!value) return '';
@@ -25,6 +27,20 @@ async function request(url, data) {
   const result = await response.json();
   if (!response.ok) throw Error(result.error);
   return result;
+}
+
+function showSeatLobby() {
+  seatLobby = true;
+  wasSeated = false;
+  if (table) {
+    table = { ...table, players: table.players.filter(player => player.userId !== user.id) };
+    render();
+  }
+  fetch('/api/me', { headers: { authorization: `Bearer ${token}` } }).then(response => response.json()).then(result => {
+    if (!result.user) return;
+    user = result.user;
+    $('account').textContent = `${user.username} · ${user.points} 积分`;
+  });
 }
 
 function auth() {
@@ -46,7 +62,8 @@ function auth() {
   ws.onmessage = event => {
     const message = JSON.parse(event.data);
     if (message.type === 'heartbeat_ack') { lastHeartbeatAck = Date.now(); return; }
-    if (message.type === 'kicked') { alert(message.reason); return; }
+    if (message.type === 'kicked') { showSeatLobby(); alert(message.reason); return; }
+    if (message.type === 'left_table') { showSeatLobby(); return; }
     if (message.type === 'error') return alert(message.error);
     if (message.type === 'state') { table = message.table; render(); }
   };
@@ -108,7 +125,7 @@ async function toggleMusic() {
   if (!musicContext) {
     musicContext = new AudioContext();
     musicMaster = musicContext.createGain();
-    musicMaster.gain.value = 0.72;
+    musicMaster.gain.value = 1.3;
     musicMaster.connect(musicContext.destination);
   }
   musicEnabled = !musicEnabled;
@@ -125,13 +142,19 @@ async function toggleMusic() {
 }
 
 function updateCountdown() {
-  if (!table?.turnDeadline) return;
+  if (!table) return;
+  if (table.resultDeadline) {
+    const resultTimer = $('result-clock');
+    if (resultTimer) resultTimer.textContent = `${Math.max(0, Math.ceil((table.resultDeadline - Date.now()) / 1000))} 秒后可开始下一局`;
+  }
+  if (!table.turnDeadline) return;
   const seconds = Math.max(0, Math.ceil((table.turnDeadline - Date.now()) / 1000));
   const timer = $('turn-clock');
   if (timer) { timer.textContent = `${seconds}s`; timer.classList.toggle('urgent', seconds <= 8); }
 }
 
 function actionControls(me) {
+  if (table.resultDeadline && table.resultDeadline > Date.now()) return '<span class="waiting-action">正在展示本局结果…</span>';
   if (table.phase === 'waiting' && me) return '<button class="primary" onclick="doAction(\'start\')">发牌开始下一局</button>';
   const isMine = me && table.turn >= 0 && table.players[table.turn]?.userId === user.id;
   if (!isMine) return '<span class="waiting-action">等待其他玩家操作…</span>';
@@ -147,6 +170,16 @@ function actionControls(me) {
 function render() {
   if (!table || !user) return;
   const me = table.players.find(player => player.userId === user.id);
+  if (me) { wasSeated = true; seatLobby = false; }
+  else if (wasSeated) {
+    wasSeated = false;
+    seatLobby = true;
+    fetch('/api/me', { headers: { authorization: `Bearer ${token}` } }).then(response => response.json()).then(result => {
+      if (!result.user) return;
+      user = result.user;
+      $('account').textContent = `${user.username} · ${user.points} 积分`;
+    });
+  }
   const myIndex = table.players.findIndex(player => player.userId === user.id);
   const seatLayouts = {
     1: [4], 2: [4, 0], 3: [4, 2, 6], 4: [4, 2, 0, 6],
@@ -157,16 +190,22 @@ function render() {
   $('table-info').textContent = `${table.players.length}/${table.maxPlayers} 人在桌 · ${table.phase}`;
   $('join').disabled = Boolean(me);
   $('join').textContent = me ? '已入座（刷新可恢复）' : '入座（500 积分）';
+  $('leave').hidden = !me;
+  $('leave').disabled = Boolean(me?.leaveAfterHand);
+  $('leave').textContent = me?.leaveAfterHand ? '已预约：本局结束后下桌' : '本局结束后下桌';
+  $('seat-status').textContent = seatLobby ? '你已离桌，请重新入座后继续游戏。' : '';
+  $('game-area').hidden = seatLobby;
   $('message').textContent = table.message;
   $('pot').textContent = `底池 ${table.pot}`;
   $('board').innerHTML = table.board.length ? table.board.map(card).join('') : '<span class="empty-board">公共牌将在翻牌圈出现</span>';
-  $('turn-status').innerHTML = turnPlayer ? '' : '<span class="turn-label">等待发牌</span>';
+  $('turn-status').innerHTML = table.resultDeadline ? '<span class="turn-label" id="result-clock"></span>' : turnPlayer ? '' : '<span class="turn-label">等待发牌</span>';
   $('players').innerHTML = table.players.map((player, index) => {
     const relativeIndex = myIndex < 0 ? index : (index - myIndex + table.players.length) % table.players.length;
     const seat = seatLayouts[table.players.length][relativeIndex];
     const timeoutInfo = player.timeoutStreak ? `超时 ${player.timeoutStreak}/3 · ` : '';
-    const status = player.disconnectedAt ? '重连中（保留座位）' : player.folded ? '已弃牌' : player.inHand ? `本轮 ${player.roundBet}` : '等待中';
-    return `<article class="player seat-${seat} ${table.turn === index ? 'turn' : ''} ${player.folded ? 'folded' : ''} ${player.disconnectedAt ? 'offline' : ''}">${table.turn === index ? '<strong class="seat-timer" id="turn-clock"></strong>' : ''}<div class="avatar">${player.username.slice(0, 1).toUpperCase()}</div><div><b>${player.username}</b>${table.dealer === index ? '<span class="dealer">D</span>' : ''}<div class="stack">● ${player.stack}</div><small>${timeoutInfo}${status}</small></div></article>`;
+    const status = player.disconnectedAt ? '重连中（保留座位）' : player.leaveAfterHand ? '本局结束后下桌' : player.folded ? '已弃牌' : player.inHand ? `本轮 ${player.roundBet}` : '等待中';
+    const showdownCards = player.cards?.length && table.showdownPlayerIds?.includes(player.userId) ? `<div class="showdown-cards" aria-label="${player.username} 的摊牌">${player.cards.map(card).join('')}</div>` : '';
+    return `<article class="player seat-${seat} ${table.turn === index ? 'turn' : ''} ${player.folded ? 'folded' : ''} ${player.disconnectedAt ? 'offline' : ''}">${table.turn === index ? '<strong class="seat-timer" id="turn-clock"></strong>' : ''}<div class="avatar">${player.username.slice(0, 1).toUpperCase()}</div><div><b>${player.username}</b>${table.dealer === index ? '<span class="dealer">D</span>' : ''}<div class="stack">● ${player.stack}</div><small>${timeoutInfo}${status}</small></div>${showdownCards}</article>`;
   }).join('');
   $('self').innerHTML = me ? `<div><span>你的筹码</span><b class="my-stack">${me.stack}</b></div><div class="cards hand">${(me.cards || []).map(card).join('') || '<span>等待发牌</span>'}</div>` : '<span>入座后即可看到你的手牌</span>';
   $('actions').innerHTML = actionControls(me);
@@ -174,8 +213,9 @@ function render() {
 }
 
 ['login', 'register'].forEach(kind => { $(kind).onclick = async () => { try { const result = await request(`/api/${kind}`, { username: $('username').value, password: $('password').value }); token = localStorage.token = result.token; user = result.user; auth(); } catch (error) { $('auth-error').textContent = error.message; } }; });
-$('join').onclick = () => send({ type: 'join' });
-$('spectate').onclick = () => send({ type: 'spectate' });
+$('join').onclick = () => { seatLobby = false; send({ type: 'join' }); };
+$('leave').onclick = () => send({ type: 'action', action: 'leave_after_hand' });
+$('spectate').onclick = () => { seatLobby = false; send({ type: 'spectate' }); };
 $('music').onclick = () => { void toggleMusic(); };
 $('logout').onclick = () => { localStorage.removeItem('token'); token = null; clearInterval(heartbeatTimer); clearTimeout(reconnectTimer); ws?.close(); location.reload(); };
 setInterval(updateCountdown, 250);
