@@ -60,7 +60,17 @@ app.get('/api/me', (req, res) => {
 });
 
 const suits = ['♠', '♥', '♦', '♣']; const ranks = '23456789TJQKA';
-const makeDeck = () => { const deck = []; for (const rank of ranks) for (const suit of suits) deck.push({ rank, suit }); return deck.sort(() => crypto.randomInt(-1, 2)); };
+const makeDeck = () => {
+  const deck = [];
+  for (const rank of ranks) for (const suit of suits) deck.push({ rank, suit });
+  // Fisher–Yates ensures every one of the 52! permutations has equal probability.
+  // crypto.randomInt uses Node's cryptographically secure random source.
+  for (let index = deck.length - 1; index > 0; index -= 1) {
+    const swapIndex = crypto.randomInt(0, index + 1);
+    [deck[index], deck[swapIndex]] = [deck[swapIndex], deck[index]];
+  }
+  return deck;
+};
 const rankValue = rank => ranks.indexOf(rank) + 2;
 const combinations = (cards, n) => n === 0 ? [[]] : cards.flatMap((card, index) => combinations(cards.slice(index + 1), n - 1).map(rest => [card, ...rest]));
 const scoreFive = cards => {
@@ -86,7 +96,7 @@ const compareScore = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length
 const handName = ['高牌', '一对', '两对', '三条', '顺子', '同花', '葫芦', '四条', '同花顺'];
 
 const tables = new Map();
-const defaultTable = { id: 'main', name: '新手牌桌', smallBlind: 10, bigBlind: 20, maxPlayers: 6, players: [], spectators: new Set(), phase: 'waiting', board: [], pot: 0, dealer: -1, turn: -1, deck: [], turnTimer: null, turnDeadline: null, message: '等待至少两位玩家入座' };
+const defaultTable = { id: 'main', name: '新手牌桌', smallBlind: 10, bigBlind: 20, maxPlayers: 8, players: [], spectators: new Set(), phase: 'waiting', board: [], pot: 0, dealer: -1, turn: -1, deck: [], turnTimer: null, turnDeadline: null, message: '等待至少两位玩家入座' };
 tables.set(defaultTable.id, defaultTable);
 const persist = table => { const { turnTimer, ...snapshot } = table; db.prepare('INSERT INTO game_snapshots(table_id,snapshot,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(table_id) DO UPDATE SET snapshot=excluded.snapshot,updated_at=CURRENT_TIMESTAMP').run(table.id, JSON.stringify({ ...snapshot, spectators: undefined, deck: undefined, players: table.players.map(({ socket, ...player }) => player) })); };
 const publicTable = (table, userId) => { const { turnTimer, ...state } = table; return { ...state, deck: undefined, spectators: undefined, players: table.players.map(({ socket, cards, ...p }) => ({ ...p, cards: (p.userId === userId && p.inHand) || (table.phase === 'waiting' && table.board.length === 5) ? cards : undefined })) }; };
