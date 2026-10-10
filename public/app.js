@@ -14,6 +14,10 @@ let musicStep = 0;
 let musicMaster;
 let wasSeated = false;
 let seatLobby = false;
+let emotePickerOpen = false;
+let voicePickerOpen = false;
+const activeEmotes = new Map();
+const voiceFiles = { fold: '不要了', calm: '冷静', shove: '推了', call: '跟了' };
 
 const card = value => {
   if (!value) return '';
@@ -70,6 +74,26 @@ function auth() {
       $('account').textContent = `${user.username} · ${user.points} 积分`;
       return;
     }
+    if (message.type === 'emote') {
+      const shownEmote = { ...message, expiresAt: Date.now() + 3_000 };
+      activeEmotes.set(message.userId, shownEmote);
+      render();
+      setTimeout(() => {
+        if (activeEmotes.get(message.userId)?.expiresAt !== shownEmote.expiresAt) return;
+        activeEmotes.delete(message.userId);
+        render();
+      }, 3_000);
+      return;
+    }
+    if (message.type === 'voice') {
+      const filename = voiceFiles[message.voice];
+      if (filename) {
+        const audio = new Audio(`/audio/${encodeURIComponent(filename)}.mp3`);
+        audio.volume = 0.8;
+        void audio.play().catch(() => {});
+      }
+      return;
+    }
     if (message.type === 'state') { table = message.table; render(); }
   };
   ws.onerror = () => ws.close();
@@ -90,6 +114,10 @@ function auth() {
 function send(message) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ ...message, tableId: 'main' })); }
 function doAction(action, amount) { send({ type: 'action', action, amount }); }
 function quickRaise(amount) { const input = $('raise'); if (input) input.value = amount; doAction('raise', amount); }
+function toggleEmotePicker() { emotePickerOpen = !emotePickerOpen; render(); }
+function sendEmote(emote) { emotePickerOpen = false; send({ type: 'emote', emote }); render(); }
+function toggleVoicePicker() { voicePickerOpen = !voicePickerOpen; render(); }
+function sendVoice(voice) { voicePickerOpen = false; send({ type: 'voice', voice }); render(); }
 
 // A quiet, minor-key lounge loop: it deliberately leaves space for the table action.
 const musicBars = [
@@ -160,17 +188,21 @@ function updateCountdown() {
 
 function actionControls(me) {
   const rebuy = me?.stack < 200 ? `<label>补充筹码（1–2000）<input id="rebuy" type="number" min="1" max="2000" value="1000"></label><button class="secondary" onclick="doAction('rebuy', +$('rebuy').value)">确认补充</button>` : '';
-  if (table.resultDeadline && table.resultDeadline > Date.now()) return `${rebuy}<span class="waiting-action">正在展示本局结果…</span>`;
-  if (table.phase === 'waiting' && me) return `${rebuy}<button class="primary" onclick="doAction('start')">发牌开始下一局</button>`;
+  const emoteChoices = [['😏', '得意'], ['😂', '大笑'], ['🤔', '思考'], ['🔥', '火力全开'], ['💀', '翻车'], ['😎', '淡定'], ['🤡', '小丑'], ['😭', '哭了'], ['😡', '生气'], ['👀', '围观'], ['🙏', '拜托'], ['😴', '困了'], ['🎯', '命中'], ['👏', '鼓掌'], ['🍀', '好运'], ['🎲', '骰子']];
+  const emotes = me ? `<div class="emote-picker"><button class="secondary" onclick="toggleEmotePicker()" aria-expanded="${emotePickerOpen}">😀 表情</button>${emotePickerOpen ? `<div class="emote-popup" role="dialog" aria-label="选择表情">${emoteChoices.map(([emote, label]) => `<button onclick="sendEmote('${emote}')" title="${label}" aria-label="${label}">${emote}</button>`).join('')}</div>` : ''}</div>` : '';
+  const voiceChoices = [['fold', '不要了'], ['calm', '冷静'], ['shove', '推了'], ['call', '跟了']];
+  const voices = me ? `<div class="voice-picker"><button class="secondary" onclick="toggleVoicePicker()" aria-expanded="${voicePickerOpen}">🔊 语音</button>${voicePickerOpen ? `<div class="voice-popup" role="dialog" aria-label="选择语音">${voiceChoices.map(([voice, label]) => `<button onclick="sendVoice('${voice}')">${label}</button>`).join('')}</div>` : ''}</div>` : '';
+  if (table.resultDeadline && table.resultDeadline > Date.now()) return `${rebuy}${emotes}${voices}<span class="waiting-action">正在展示本局结果…</span>`;
+  if (table.phase === 'waiting' && me) return `${rebuy}${emotes}${voices}<button class="primary" onclick="doAction('start')">发牌开始下一局</button>`;
   const isMine = me && table.turn >= 0 && table.players[table.turn]?.userId === user.id;
-  if (!isMine) return '<span class="waiting-action">等待其他玩家操作…</span>';
+  if (!isMine) return `${emotes}${voices}<span class="waiting-action">等待其他玩家操作…</span>`;
   const maxBet = Math.max(...table.players.filter(player => player.inHand && !player.folded).map(player => player.roundBet));
   const call = maxBet - me.roundBet;
   const minRaise = maxBet + table.bigBlind;
   const twoBigBlinds = maxBet + table.bigBlind * 2;
   const potRaise = Math.min(me.roundBet + me.stack, maxBet + Math.max(table.pot, table.bigBlind));
   const canRaise = me.stack > call;
-  return `<div class="main-actions"><button class="danger" onclick="doAction('fold')">弃牌</button>${call === 0 ? '<button onclick="doAction(\'check\')">过牌</button>' : `<button onclick="doAction('call')">跟注 ${call}</button>`}<button class="all-in" onclick="doAction('allin')">全下 ${me.stack}</button></div>${canRaise ? `<div class="raise-actions"><button class="secondary" onclick="quickRaise(${minRaise})">最小加注 ${minRaise}</button><button class="secondary" onclick="quickRaise(${Math.min(me.roundBet + me.stack, twoBigBlinds)})">+2BB</button><button class="secondary" onclick="quickRaise(${potRaise})">底池加注</button><label>总下注<input id="raise" type="number" min="${minRaise}" max="${me.roundBet + me.stack}" value="${minRaise}"></label><button onclick="doAction('raise', +$('raise').value)">确认加注</button></div>` : ''}`;
+  return `${emotes}${voices}<div class="main-actions"><button class="danger" onclick="doAction('fold')">弃牌</button>${call === 0 ? '<button onclick="doAction(\'check\')">过牌</button>' : `<button onclick="doAction('call')">跟注 ${call}</button>`}<button class="all-in" onclick="doAction('allin')">全下 ${me.stack}</button></div>${canRaise ? `<div class="raise-actions"><button class="secondary" onclick="quickRaise(${minRaise})">最小加注 ${minRaise}</button><button class="secondary" onclick="quickRaise(${Math.min(me.roundBet + me.stack, twoBigBlinds)})">+2BB</button><button class="secondary" onclick="quickRaise(${potRaise})">底池加注</button><label>总下注<input id="raise" type="number" min="${minRaise}" max="${me.roundBet + me.stack}" value="${minRaise}"></label><button onclick="doAction('raise', +$('raise').value)">确认加注</button></div>` : ''}`;
 }
 
 function render() {
@@ -213,7 +245,8 @@ function render() {
     const status = player.disconnectedAt ? '重连中（保留座位）' : player.leaveAfterHand ? '本局结束后下桌' : player.folded ? '已弃牌' : player.inHand ? `本轮 ${player.roundBet}` : '等待中';
     const handStrength = player.handName ? `<div class="hand-strength">牌力：${player.handName}</div>` : '';
     const showdownCards = player.cards?.length && table.showdownPlayerIds?.includes(player.userId) ? `<div class="showdown-cards" aria-label="${player.username} 的摊牌">${player.cards.map(card).join('')}</div>` : '';
-    return `<article class="player seat-${seat} ${table.turn === index ? 'turn' : ''} ${player.folded ? 'folded' : ''} ${player.disconnectedAt ? 'offline' : ''}">${table.turn === index ? '<strong class="seat-timer" id="turn-clock"></strong>' : ''}<div class="avatar">${player.username.slice(0, 1).toUpperCase()}</div><div><b>${player.username}</b>${table.dealer === index ? '<span class="dealer">D</span>' : ''}<div class="stack">● ${player.stack}</div><small>${timeoutInfo}${status}</small>${handStrength}</div>${showdownCards}</article>`;
+    const emote = activeEmotes.get(player.userId)?.emote;
+    return `<article class="player seat-${seat} ${table.turn === index ? 'turn' : ''} ${player.folded ? 'folded' : ''} ${player.disconnectedAt ? 'offline' : ''}">${table.turn === index ? '<strong class="seat-timer" id="turn-clock"></strong>' : ''}${emote ? `<span class="emote-bubble" aria-label="${player.username} 发送表情">${emote}</span>` : ''}<div class="avatar">${player.username.slice(0, 1).toUpperCase()}</div><div><b>${player.username}</b>${table.dealer === index ? '<span class="dealer">D</span>' : ''}<div class="stack">● ${player.stack}</div><small>${timeoutInfo}${status}</small>${handStrength}</div>${showdownCards}</article>`;
   }).join('');
   $('self').innerHTML = me ? `<div><span>你的筹码</span><b class="my-stack">${me.stack}</b>${me.handName ? `<div class="hand-strength">牌力：${me.handName}</div>` : ''}</div><div class="cards hand">${(me.cards || []).map(card).join('') || '<span>等待发牌</span>'}</div>` : '<span>入座后即可看到你的手牌</span>';
   $('actions').innerHTML = actionControls(me);

@@ -16,6 +16,8 @@ const TURN_TIMEOUT_MS = 25_000;
 const RESULT_DISPLAY_MS = 10_000;
 const RECONNECT_GRACE_MS = 60_000;
 const WS_HEARTBEAT_MS = 30_000;
+const EMOTES = new Set(['😏', '😂', '🤔', '🔥', '💀', '😎', '🤡', '😭', '😡', '👀', '🙏', '😴', '🎯', '👏', '🍀', '🎲']);
+const VOICE_LINES = new Set(['fold', 'calm', 'shove', 'call']);
 const db = new Database(path.join(__dirname, 'texas.sqlite'));
 db.pragma('journal_mode = WAL');
 db.exec(`
@@ -121,7 +123,7 @@ const publicTable = (table, userId) => {
     // A different blind or a pending call is not a side pot yet.  Only expose
     // the breakdown after every live player has completed this betting round.
     potBreakdown: hasPendingBettingAction(table) ? [] : calculatePots(table).map(({ amount }) => ({ amount })),
-    players: table.players.map(({ socket, reconnectTimer, cards, handName: revealedHandName, ...p }) => {
+    players: table.players.map(({ socket, reconnectTimer, cards, handName: revealedHandName, lastEmoteAt, lastVoiceAt, ...p }) => {
       const isSelf = p.userId === userId && p.inHand;
       const isShowdown = table.showdownPlayerIds?.includes(p.userId);
       return { ...p, cards: isSelf || isShowdown ? cards : undefined, handName: isShowdown ? revealedHandName : isSelf && table.phase !== 'waiting' ? currentHandName([...cards, ...table.board]) : undefined };
@@ -130,6 +132,26 @@ const publicTable = (table, userId) => {
 };
 const broadcast = table => { persist(table); for (const client of [...table.players, ...table.spectators]) if (client.socket?.readyState === 1) client.socket.send(JSON.stringify({ type: 'state', table: publicTable(table, client.userId) })); };
 const activePlayers = table => table.players.filter(p => p.inHand && !p.folded);
+function sendEmote(table, userId, emote) {
+  const player = table.players.find(item => item.userId === userId);
+  if (!player) throw new Error('入座后才能发送表情');
+  if (!EMOTES.has(emote)) throw new Error('不支持的表情');
+  const now = Date.now();
+  if (now - (player.lastEmoteAt || 0) < 2_000) return;
+  player.lastEmoteAt = now;
+  const message = JSON.stringify({ type: 'emote', userId, emote, expiresAt: now + 3_000 });
+  for (const client of [...table.players, ...table.spectators]) if (client.socket?.readyState === 1) client.socket.send(message);
+}
+function sendVoice(table, userId, voice) {
+  const player = table.players.find(item => item.userId === userId);
+  if (!player) throw new Error('入座后才能发送语音');
+  if (!VOICE_LINES.has(voice)) throw new Error('不支持的语音');
+  const now = Date.now();
+  if (now - (player.lastVoiceAt || 0) < 3_000) return;
+  player.lastVoiceAt = now;
+  const message = JSON.stringify({ type: 'voice', userId, voice });
+  for (const client of [...table.players, ...table.spectators]) if (client.socket?.readyState === 1) client.socket.send(message);
+}
 function hasPendingBettingAction(table) {
   const alive = activePlayers(table);
   if (!alive.length) return false;
@@ -384,8 +406,10 @@ wss.on('connection', (socket, request) => {
       if (table.players.length >= table.maxPlayers) throw new Error('牌桌已满');
       const account = db.prepare('SELECT points FROM users WHERE id=?').get(user.id); if (account.points < BUY_IN) throw new Error(`积分不足，入桌需要 ${BUY_IN} 积分`);
       db.transaction(() => { db.prepare('UPDATE users SET points=points-? WHERE id=?').run(BUY_IN, user.id); db.prepare('INSERT INTO wallet_transactions(user_id,amount,reason) VALUES(?,?,?)').run(user.id, -BUY_IN, '进入牌桌买入'); })();
-      table.players.push({ userId: user.id, username: user.username, stack: BUY_IN, socket, reconnectTimer: null, disconnectedAt: null, timeoutStreak: 0, inHand: false, folded: false, roundBet: 0, totalBet: 0, cards: [] }); broadcast(table);
+      table.players.push({ userId: user.id, username: user.username, stack: BUY_IN, socket, reconnectTimer: null, disconnectedAt: null, timeoutStreak: 0, lastEmoteAt: 0, lastVoiceAt: 0, inHand: false, folded: false, roundBet: 0, totalBet: 0, cards: [] }); broadcast(table);
     } else if (message.type === 'spectate') { table.spectators.add({ userId: user.id, username: user.username, socket }); broadcast(table); }
+    else if (message.type === 'emote') sendEmote(table, user.id, message.emote);
+    else if (message.type === 'voice') sendVoice(table, user.id, message.voice);
     else if (message.type === 'action') act(table, user.id, message.action, message.amount);
   } catch (error) { socket.send(JSON.stringify({ type: 'error', error: error.message || '操作失败' })); } });
   socket.on('close', () => tables.forEach(table => { const player = table.players.find(p => p.userId === user.id); if (player) holdSeatForReconnect(table, player, socket); for (const spectator of table.spectators) if (spectator.socket === socket) table.spectators.delete(spectator); }));
