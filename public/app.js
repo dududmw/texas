@@ -1,4 +1,5 @@
 const $ = id => document.getElementById(id);
+const escapeHtml = value => String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
 let token = localStorage.token;
 let ws;
 let table;
@@ -123,6 +124,7 @@ function auth() {
 function send(message) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ ...message, tableId: 'main' })); }
 function doAction(action, amount) { send({ type: 'action', action, amount }); }
 function quickRaise(amount) { const input = $('raise'); if (input) input.value = amount; doAction('raise', amount); }
+function sendChat() { const input = $('chat-input'); const text = input?.value.trim(); if (!text) return; send({ type: 'chat', text }); input.value = ''; }
 function toggleEmotePicker() { emotePickerOpen = !emotePickerOpen; render(); }
 function sendEmote(emote) { emotePickerOpen = false; send({ type: 'emote', emote }); render(); }
 function toggleVoicePicker() { voicePickerOpen = !voicePickerOpen; render(); }
@@ -245,6 +247,9 @@ function render() {
   $('message').textContent = table.message;
   const potLabels = table.potBreakdown?.length ? table.potBreakdown.map((pot, index) => `${index ? `边池 ${index}` : '主池'} ${pot.amount}`).join(' · ') : `底池 ${table.pot}`;
   $('pot').textContent = potLabels;
+  const chatHistory = $('chat-history');
+  chatHistory.innerHTML = (table.chatMessages || []).map(message => `<div class="chat-message"><b>${escapeHtml(message.username)}</b><span>${escapeHtml(message.text)}</span></div>`).join('') || '<span class="chat-empty">还没有聊天消息</span>';
+  chatHistory.scrollTop = chatHistory.scrollHeight;
   $('board').innerHTML = table.board.length ? table.board.map(card).join('') : '<span class="empty-board">公共牌将在翻牌圈出现</span>';
   $('turn-status').innerHTML = table.resultDeadline ? '<span class="turn-label" id="result-clock"></span>' : turnPlayer ? '' : '<span class="turn-label">等待发牌</span>';
   $('players').innerHTML = table.players.map((player, index) => {
@@ -267,6 +272,8 @@ function render() {
 $('join').onclick = () => { seatLobby = false; send({ type: 'join' }); };
 $('leave').onclick = () => send({ type: 'action', action: 'leave_after_hand' });
 $('spectate').onclick = () => { seatLobby = false; send({ type: 'spectate' }); };
+$('chat-send').onclick = sendChat;
+$('chat-input').onkeydown = event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); sendChat(); } };
 $('music').onclick = () => { void toggleMusic(); };
 $('logout').onclick = () => { localStorage.removeItem('token'); token = null; clearInterval(heartbeatTimer); clearTimeout(reconnectTimer); ws?.close(); location.reload(); };
 setInterval(updateCountdown, 250);

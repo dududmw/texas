@@ -111,7 +111,7 @@ const currentHandName = cards => {
 };
 
 const tables = new Map();
-const defaultTable = { id: 'main', name: '新手牌桌', smallBlind: 10, bigBlind: 20, maxPlayers: 8, players: [], spectators: new Set(), phase: 'waiting', board: [], pot: 0, dealer: -1, turn: -1, deck: [], turnTimer: null, turnDeadline: null, resultTimer: null, resultDeadline: null, showdownPlayerIds: [], message: '等待至少两位玩家入座' };
+const defaultTable = { id: 'main', name: '新手牌桌', smallBlind: 10, bigBlind: 20, maxPlayers: 8, players: [], spectators: new Set(), phase: 'waiting', board: [], pot: 0, dealer: -1, turn: -1, deck: [], turnTimer: null, turnDeadline: null, resultTimer: null, resultDeadline: null, showdownPlayerIds: [], chatMessages: [], message: '等待至少两位玩家入座' };
 tables.set(defaultTable.id, defaultTable);
 const persist = table => { const { turnTimer, resultTimer, ...snapshot } = table; db.prepare('INSERT INTO game_snapshots(table_id,snapshot,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(table_id) DO UPDATE SET snapshot=excluded.snapshot,updated_at=CURRENT_TIMESTAMP').run(table.id, JSON.stringify({ ...snapshot, spectators: undefined, players: table.players.map(({ socket, reconnectTimer, ...player }) => player) })); };
 const publicTable = (table, userId) => {
@@ -123,7 +123,7 @@ const publicTable = (table, userId) => {
     // A different blind or a pending call is not a side pot yet.  Only expose
     // the breakdown after every live player has completed this betting round.
     potBreakdown: hasPendingBettingAction(table) ? [] : calculatePots(table).map(({ amount }) => ({ amount })),
-    players: table.players.map(({ socket, reconnectTimer, cards, handName: revealedHandName, lastEmoteAt, lastVoiceAt, ...p }) => {
+    players: table.players.map(({ socket, reconnectTimer, cards, handName: revealedHandName, lastChatAt, lastEmoteAt, lastVoiceAt, ...p }) => {
       const isSelf = p.userId === userId && p.inHand;
       const isShowdown = table.showdownPlayerIds?.includes(p.userId);
       return { ...p, cards: isSelf || isShowdown ? cards : undefined, handName: isShowdown ? revealedHandName : isSelf && table.phase !== 'waiting' ? currentHandName([...cards, ...table.board]) : undefined };
@@ -132,6 +132,17 @@ const publicTable = (table, userId) => {
 };
 const broadcast = table => { persist(table); for (const client of [...table.players, ...table.spectators]) if (client.socket?.readyState === 1) client.socket.send(JSON.stringify({ type: 'state', table: publicTable(table, client.userId) })); };
 const activePlayers = table => table.players.filter(p => p.inHand && !p.folded);
+function sendChat(table, userId, content) {
+  const participant = table.players.find(player => player.userId === userId) || [...table.spectators].find(spectator => spectator.userId === userId);
+  if (!participant) throw new Error('入座或旁观后才能聊天');
+  const text = Array.from(String(content || '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim()).slice(0, 120).join('');
+  if (!text) throw new Error('请输入聊天内容');
+  const now = Date.now();
+  if (now - (participant.lastChatAt || 0) < 800) return;
+  participant.lastChatAt = now;
+  table.chatMessages = [...(table.chatMessages || []), { userId, username: participant.username, text, at: now }].slice(-100);
+  broadcast(table);
+}
 function sendEmote(table, userId, emote) {
   const player = table.players.find(item => item.userId === userId);
   if (!player) throw new Error('入座后才能发送表情');
@@ -408,6 +419,7 @@ wss.on('connection', (socket, request) => {
       db.transaction(() => { db.prepare('UPDATE users SET points=points-? WHERE id=?').run(BUY_IN, user.id); db.prepare('INSERT INTO wallet_transactions(user_id,amount,reason) VALUES(?,?,?)').run(user.id, -BUY_IN, '进入牌桌买入'); })();
       table.players.push({ userId: user.id, username: user.username, stack: BUY_IN, socket, reconnectTimer: null, disconnectedAt: null, timeoutStreak: 0, lastEmoteAt: 0, lastVoiceAt: 0, inHand: false, folded: false, roundBet: 0, totalBet: 0, cards: [] }); broadcast(table);
     } else if (message.type === 'spectate') { table.spectators.add({ userId: user.id, username: user.username, socket }); broadcast(table); }
+    else if (message.type === 'chat') sendChat(table, user.id, message.text);
     else if (message.type === 'emote') sendEmote(table, user.id, message.emote);
     else if (message.type === 'voice') sendVoice(table, user.id, message.voice);
     else if (message.type === 'action') act(table, user.id, message.action, message.amount);
