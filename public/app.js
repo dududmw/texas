@@ -65,6 +65,11 @@ function auth() {
     if (message.type === 'kicked') { showSeatLobby(); alert(message.reason); return; }
     if (message.type === 'left_table') { showSeatLobby(); return; }
     if (message.type === 'error') return alert(message.error);
+    if (message.type === 'balance') {
+      user = { ...user, points: message.points };
+      $('account').textContent = `${user.username} · ${user.points} 积分`;
+      return;
+    }
     if (message.type === 'state') { table = message.table; render(); }
   };
   ws.onerror = () => ws.close();
@@ -154,8 +159,9 @@ function updateCountdown() {
 }
 
 function actionControls(me) {
-  if (table.resultDeadline && table.resultDeadline > Date.now()) return '<span class="waiting-action">正在展示本局结果…</span>';
-  if (table.phase === 'waiting' && me) return '<button class="primary" onclick="doAction(\'start\')">发牌开始下一局</button>';
+  const rebuy = me?.stack < 200 ? `<label>补充筹码（1–2000）<input id="rebuy" type="number" min="1" max="2000" value="1000"></label><button class="secondary" onclick="doAction('rebuy', +$('rebuy').value)">确认补充</button>` : '';
+  if (table.resultDeadline && table.resultDeadline > Date.now()) return `${rebuy}<span class="waiting-action">正在展示本局结果…</span>`;
+  if (table.phase === 'waiting' && me) return `${rebuy}<button class="primary" onclick="doAction('start')">发牌开始下一局</button>`;
   const isMine = me && table.turn >= 0 && table.players[table.turn]?.userId === user.id;
   if (!isMine) return '<span class="waiting-action">等待其他玩家操作…</span>';
   const maxBet = Math.max(...table.players.filter(player => player.inHand && !player.folded).map(player => player.roundBet));

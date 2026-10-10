@@ -10,6 +10,7 @@ const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 80;
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-local-secret';
 const BUY_IN = 1000;
+const REBUY_MAX_AMOUNT = 2000;
 const STARTING_POINTS = 6000;
 const TURN_TIMEOUT_MS = 25_000;
 const RESULT_DISPLAY_MS = 10_000;
@@ -117,7 +118,9 @@ const publicTable = (table, userId) => {
     ...state,
     deck: undefined,
     spectators: undefined,
-    potBreakdown: calculatePots(table).map(({ amount }) => ({ amount })),
+    // A different blind or a pending call is not a side pot yet.  Only expose
+    // the breakdown after every live player has completed this betting round.
+    potBreakdown: hasPendingBettingAction(table) ? [] : calculatePots(table).map(({ amount }) => ({ amount })),
     players: table.players.map(({ socket, reconnectTimer, cards, handName: revealedHandName, ...p }) => {
       const isSelf = p.userId === userId && p.inHand;
       const isShowdown = table.showdownPlayerIds?.includes(p.userId);
@@ -127,6 +130,12 @@ const publicTable = (table, userId) => {
 };
 const broadcast = table => { persist(table); for (const client of [...table.players, ...table.spectators]) if (client.socket?.readyState === 1) client.socket.send(JSON.stringify({ type: 'state', table: publicTable(table, client.userId) })); };
 const activePlayers = table => table.players.filter(p => p.inHand && !p.folded);
+function hasPendingBettingAction(table) {
+  const alive = activePlayers(table);
+  if (!alive.length) return false;
+  const maxBet = Math.max(...alive.map(player => player.roundBet));
+  return alive.some(player => player.stack > 0 && (!player.acted || player.roundBet !== maxBet));
+}
 function calculatePots(table) {
   const levels = [...new Set(table.players.map(player => player.totalBet || 0).filter(Boolean))].sort((a, b) => a - b);
   let previous = 0;
@@ -238,9 +247,28 @@ function showdown(table) {
 function settleIfNeeded(table) {
   const alive = activePlayers(table); if (alive.length === 0) { clearTurnTimer(table); table.phase = 'waiting'; table.turn = -1; table.message = '牌局因所有玩家离桌而结束'; table.pot = 0; beginResultDisplay(table); broadcast(table); return true; }
   if (alive.length === 1) { clearTurnTimer(table); alive[0].stack += table.pot; table.message = `${alive[0].username} 获胜，赢得 ${table.pot} 积分`; table.phase = 'waiting'; table.turn = -1; beginResultDisplay(table); logHand(table, 'all folded'); broadcast(table); return true; }
-  const pending = alive.some(p => p.stack > 0 && (!p.acted || p.roundBet !== Math.max(...alive.map(x => x.roundBet)))); if (!pending) { revealNext(table); return true; } return false;
+  if (!hasPendingBettingAction(table)) { revealNext(table); return true; } return false;
 }
 function act(table, userId, action, amount, options = {}) {
+  if (action === 'rebuy') {
+    const player = table.players.find(item => item.userId === userId);
+    if (!player) throw new Error('你尚未入座');
+    if (table.phase !== 'waiting') throw new Error('请在本局结算后补充筹码');
+    if (player.stack >= 200) throw new Error('桌上筹码低于 200 时才可补充');
+    const requestedAmount = Number(amount);
+    if (!Number.isInteger(requestedAmount) || requestedAmount < 1 || requestedAmount > REBUY_MAX_AMOUNT) throw new Error(`补充数额须为 1 至 ${REBUY_MAX_AMOUNT}`);
+    const added = db.transaction(() => {
+      const account = db.prepare('SELECT points FROM users WHERE id=?').get(userId);
+      if (account.points < requestedAmount) throw new Error('账户积分不足');
+      db.prepare('UPDATE users SET points=points-? WHERE id=?').run(requestedAmount, userId);
+      db.prepare('INSERT INTO wallet_transactions(user_id,amount,reason) VALUES(?,?,?)').run(userId, -requestedAmount, '低筹码补充');
+      return { amountToAdd: requestedAmount, points: account.points - requestedAmount };
+    })();
+    player.stack += added.amountToAdd;
+    if (player.socket?.readyState === 1) player.socket.send(JSON.stringify({ type: 'balance', points: added.points }));
+    if (!table.resultDeadline) table.message = `${player.username} 补充了 ${added.amountToAdd} 筹码`;
+    return broadcast(table);
+  }
   if (action === 'leave_after_hand') {
     const player = table.players.find(p => p.userId === userId);
     if (!player) throw new Error('你尚未入座');
