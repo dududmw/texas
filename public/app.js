@@ -17,6 +17,7 @@ let seatLobby = false;
 let emotePickerOpen = false;
 let voicePickerOpen = false;
 const activeEmotes = new Map();
+const activeVoices = new Map();
 const voiceFiles = { fold: '不要了', calm: '冷静', shove: '推了', call: '跟了' };
 
 const card = value => {
@@ -88,6 +89,14 @@ function auth() {
     if (message.type === 'voice') {
       const filename = voiceFiles[message.voice];
       if (filename) {
+        const shownVoice = { text: filename, expiresAt: Date.now() + 3_000 };
+        activeVoices.set(message.userId, shownVoice);
+        render();
+        setTimeout(() => {
+          if (activeVoices.get(message.userId)?.expiresAt !== shownVoice.expiresAt) return;
+          activeVoices.delete(message.userId);
+          render();
+        }, 3_000);
         const audio = new Audio(`/audio/${encodeURIComponent(filename)}.mp3`);
         audio.volume = 0.8;
         void audio.play().catch(() => {});
@@ -246,7 +255,8 @@ function render() {
     const handStrength = player.handName ? `<div class="hand-strength">牌力：${player.handName}</div>` : '';
     const showdownCards = player.cards?.length && table.showdownPlayerIds?.includes(player.userId) ? `<div class="showdown-cards" aria-label="${player.username} 的摊牌">${player.cards.map(card).join('')}</div>` : '';
     const emote = activeEmotes.get(player.userId)?.emote;
-    return `<article class="player seat-${seat} ${table.turn === index ? 'turn' : ''} ${player.folded ? 'folded' : ''} ${player.disconnectedAt ? 'offline' : ''}">${table.turn === index ? '<strong class="seat-timer" id="turn-clock"></strong>' : ''}${emote ? `<span class="emote-bubble" aria-label="${player.username} 发送表情">${emote}</span>` : ''}<div class="avatar">${player.username.slice(0, 1).toUpperCase()}</div><div><b>${player.username}</b>${table.dealer === index ? '<span class="dealer">D</span>' : ''}<div class="stack">● ${player.stack}</div><small>${timeoutInfo}${status}</small>${handStrength}</div>${showdownCards}</article>`;
+    const voice = activeVoices.get(player.userId)?.text;
+    return `<article class="player seat-${seat} ${table.turn === index ? 'turn' : ''} ${player.folded ? 'folded' : ''} ${player.disconnectedAt ? 'offline' : ''}">${table.turn === index ? '<strong class="seat-timer" id="turn-clock"></strong>' : ''}${emote ? `<span class="emote-bubble" aria-label="${player.username} 发送表情">${emote}</span>` : ''}${voice ? `<span class="voice-bubble" aria-label="${player.username} 发送语音">${voice}</span>` : ''}<div class="avatar">${player.username.slice(0, 1).toUpperCase()}</div><div><b>${player.username}</b>${table.dealer === index ? '<span class="dealer">D</span>' : ''}<div class="stack">● ${player.stack}</div><small>${timeoutInfo}${status}</small>${handStrength}</div>${showdownCards}</article>`;
   }).join('');
   $('self').innerHTML = me ? `<div><span>你的筹码</span><b class="my-stack">${me.stack}</b>${me.handName ? `<div class="hand-strength">牌力：${me.handName}</div>` : ''}</div><div class="cards hand">${(me.cards || []).map(card).join('') || '<span>等待发牌</span>'}</div>` : '<span>入座后即可看到你的手牌</span>';
   $('actions').innerHTML = actionControls(me);
