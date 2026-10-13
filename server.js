@@ -40,6 +40,7 @@ db.exec(`
 
 const app = express();
 app.use(express.json());
+app.get('/webgl-background.html', (_req, res) => res.sendFile(path.join(__dirname, '..', 'webgl', 'index.html')));
 app.use(express.static(path.join(__dirname, 'public')));
 const issueToken = user => jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
 const safeUser = user => ({ id: user.id, username: user.username, points: user.points });

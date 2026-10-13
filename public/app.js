@@ -197,11 +197,11 @@ async function toggleMusic() {
     await musicContext.resume();
     playMusicPhrase();
     musicTimer = setInterval(playMusicPhrase, 2500);
-    $('music').textContent = '♫ 氛围音乐：开';
+    $('music').textContent = '氛围音乐：开';
   } else {
     clearInterval(musicTimer);
     await musicContext.suspend();
-    $('music').textContent = '♫ 氛围音乐：关';
+    $('music').textContent = '氛围音乐：关';
   }
 }
 
