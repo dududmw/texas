@@ -111,7 +111,7 @@ const currentHandName = cards => {
 };
 
 const tables = new Map();
-const defaultTable = { id: 'main', name: '新手牌桌', smallBlind: 10, bigBlind: 20, maxPlayers: 8, players: [], spectators: new Set(), phase: 'waiting', board: [], pot: 0, dealer: -1, turn: -1, deck: [], turnTimer: null, turnDeadline: null, resultTimer: null, resultDeadline: null, showdownPlayerIds: [], chatMessages: [], message: '等待至少两位玩家入座' };
+const defaultTable = { id: 'main', name: '新手牌桌', smallBlind: 10, bigBlind: 20, maxPlayers: 8, players: [], spectators: new Set(), phase: 'waiting', board: [], pot: 0, dealer: -1, turn: -1, deck: [], turnTimer: null, turnDeadline: null, resultTimer: null, resultDeadline: null, showdownOpen: false, showdownPlayerIds: [], chatMessages: [], message: '等待至少两位玩家入座' };
 tables.set(defaultTable.id, defaultTable);
 const persist = table => { const { turnTimer, resultTimer, ...snapshot } = table; db.prepare('INSERT INTO game_snapshots(table_id,snapshot,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(table_id) DO UPDATE SET snapshot=excluded.snapshot,updated_at=CURRENT_TIMESTAMP').run(table.id, JSON.stringify({ ...snapshot, spectators: undefined, players: table.players.map(({ socket, reconnectTimer, ...player }) => player) })); };
 const publicTable = (table, userId) => {
@@ -194,6 +194,7 @@ function scheduleResultCompletion(table) {
   table.resultTimer = setTimeout(() => {
     table.resultTimer = null;
     table.resultDeadline = null;
+    table.showdownOpen = false;
     table.showdownPlayerIds = [];
     table.players.forEach(player => { player.handName = null; });
     removeQueuedLeavers(table);
@@ -243,7 +244,7 @@ function startHand(table) {
     throw new Error('至少两位有积分的玩家才能开始');
   }
   if (table.resultDeadline) throw new Error('正在展示上一局结果，请稍候');
-  table.deck = makeDeck(); table.board = []; table.pot = 0; table.phase = 'preflop'; table.resultDeadline = null; table.showdownPlayerIds = []; table.message = '翻牌前下注';
+  table.deck = makeDeck(); table.board = []; table.pot = 0; table.phase = 'preflop'; table.resultDeadline = null; table.showdownOpen = false; table.showdownPlayerIds = []; table.message = '翻牌前下注';
   table.players.forEach(p => Object.assign(p, { cards: [table.deck.pop(), table.deck.pop()], inHand: p.stack > 0, folded: false, roundBet: 0, totalBet: 0, acted: false, handName: null }));
   postBlinds(table); scheduleTurnTimer(table); logHand(table, 'start'); broadcast(table);
 }
@@ -253,6 +254,9 @@ function revealNext(table) {
   else if (table.phase === 'flop') { table.board.push(table.deck.pop()); table.phase = 'turn'; table.message = '转牌圈'; }
   else if (table.phase === 'turn') { table.board.push(table.deck.pop()); table.phase = 'river'; table.message = '河牌圈'; }
   else return showdown(table);
+  // The remaining player has already matched the all-in bet. With every
+  // opponent now all-in, skip empty betting rounds and run out the board.
+  if (activePlayers(table).filter(player => player.stack > 0).length <= 1) return revealNext(table);
   table.turn = nextIndex(table, table.dealer, p => p.inHand && !p.folded && p.stack > 0);
   if (table.turn < 0) revealNext(table); else { scheduleTurnTimer(table); broadcast(table); }
 }
@@ -274,7 +278,10 @@ function showdown(table) {
     return `${index ? `边池 ${index}` : '主池'} ${pot.amount}：${winners.map(player => player.username).join('、')}（${handName[high[0]]}）`;
   });
   table.message = payoutSummary.join('；');
-  table.showdownPlayerIds = contenders.map(p => p.userId);
+  // During the result display, every participant can choose to reveal their
+  // own hole cards. Do not reveal contenders automatically.
+  table.showdownOpen = true;
+  table.showdownPlayerIds = [];
   table.phase = 'waiting'; table.turn = -1; beginResultDisplay(table); logHand(table, { pots: payoutSummary }); broadcast(table);
 }
 function settleIfNeeded(table) {
@@ -283,6 +290,17 @@ function settleIfNeeded(table) {
   if (!hasPendingBettingAction(table)) { revealNext(table); return true; } return false;
 }
 function act(table, userId, action, amount, options = {}) {
+  if (action === 'showdown') {
+    const player = table.players.find(item => item.userId === userId);
+    if (!player) throw new Error('你尚未入座');
+    if (!table.showdownOpen || !table.resultDeadline || table.resultDeadline <= Date.now() || !player.cards?.length) throw new Error('当前不能摊牌');
+    table.showdownPlayerIds ??= [];
+    if (!table.showdownPlayerIds.includes(userId)) {
+      table.showdownPlayerIds.push(userId);
+      logHand(table, { user: player.username, action: 'showdown' });
+    }
+    return broadcast(table);
+  }
   if (action === 'rebuy') {
     const player = table.players.find(item => item.userId === userId);
     if (!player) throw new Error('你尚未入座');

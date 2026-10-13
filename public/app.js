@@ -203,7 +203,10 @@ function actionControls(me) {
   const emotes = me ? `<div class="emote-picker"><button class="secondary" onclick="toggleEmotePicker()" aria-expanded="${emotePickerOpen}">😀 表情</button>${emotePickerOpen ? `<div class="emote-popup" role="dialog" aria-label="选择表情">${emoteChoices.map(([emote, label]) => `<button onclick="sendEmote('${emote}')" title="${label}" aria-label="${label}">${emote}</button>`).join('')}</div>` : ''}</div>` : '';
   const voiceChoices = [['fold', '不要了'], ['calm', '冷静'], ['shove', '推了'], ['call', '跟了']];
   const voices = me ? `<div class="voice-picker"><button class="secondary" onclick="toggleVoicePicker()" aria-expanded="${voicePickerOpen}">🔊 语音</button>${voicePickerOpen ? `<div class="voice-popup" role="dialog" aria-label="选择语音">${voiceChoices.map(([voice, label]) => `<button onclick="sendVoice('${voice}')">${label}</button>`).join('')}</div>` : ''}</div>` : '';
-  if (table.resultDeadline && table.resultDeadline > Date.now()) return `${rebuy}${emotes}${voices}<span class="waiting-action">正在展示本局结果…</span>`;
+  if (table.resultDeadline && table.resultDeadline > Date.now()) {
+    const canShowdown = me?.cards?.length && table.showdownOpen && !table.showdownPlayerIds?.includes(user.id);
+    return `${rebuy}${emotes}${voices}${canShowdown ? '<button class="primary" onclick="doAction(\'showdown\')">摊牌</button>' : ''}<span class="waiting-action">正在展示本局结果…</span>`;
+  }
   if (table.phase === 'waiting' && me) return `${rebuy}${emotes}${voices}<button class="primary" onclick="doAction('start')">发牌开始下一局</button>`;
   const isMine = me && table.turn >= 0 && table.players[table.turn]?.userId === user.id;
   if (!isMine) return `${emotes}${voices}<span class="waiting-action">等待其他玩家操作…</span>`;
