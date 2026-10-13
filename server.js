@@ -286,8 +286,8 @@ function showdown(table) {
   table.phase = 'waiting'; table.turn = -1; beginResultDisplay(table); logHand(table, { pots: payoutSummary }); broadcast(table);
 }
 function settleIfNeeded(table) {
-  const alive = activePlayers(table); if (alive.length === 0) { clearTurnTimer(table); table.phase = 'waiting'; table.turn = -1; table.message = '牌局因所有玩家离桌而结束'; table.pot = 0; beginResultDisplay(table); broadcast(table); return true; }
-  if (alive.length === 1) { clearTurnTimer(table); alive[0].stack += table.pot; table.message = `${alive[0].username} 获胜，赢得 ${table.pot} 积分`; table.phase = 'waiting'; table.turn = -1; beginResultDisplay(table); logHand(table, 'all folded'); broadcast(table); return true; }
+  const alive = activePlayers(table); if (alive.length === 0) { clearTurnTimer(table); table.phase = 'waiting'; table.turn = -1; table.message = '牌局因所有玩家离桌而结束'; table.pot = 0; table.showdownOpen = true; table.showdownPlayerIds = []; beginResultDisplay(table); broadcast(table); return true; }
+  if (alive.length === 1) { clearTurnTimer(table); alive[0].stack += table.pot; table.message = `${alive[0].username} 获胜，赢得 ${table.pot} 积分`; table.phase = 'waiting'; table.turn = -1; table.showdownOpen = true; table.showdownPlayerIds = []; beginResultDisplay(table); logHand(table, 'all folded'); broadcast(table); return true; }
   if (!hasPendingBettingAction(table)) { revealNext(table); return true; } return false;
 }
 function act(table, userId, action, amount, options = {}) {
