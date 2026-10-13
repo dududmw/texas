@@ -238,6 +238,18 @@ function render() {
     5: [4, 3, 1, 7, 5], 6: [4, 3, 2, 0, 6, 5],
     7: [4, 3, 2, 1, 7, 6, 5], 8: [4, 3, 2, 1, 0, 7, 6, 5],
   };
+  const previewPlayers = [
+    { username: '林默', stack: 2480, roundBet: 120, previewSeatRole: '庄家', previewStatus: '在局中', handName: '两对' },
+    { username: 'Mia', stack: 1960, roundBet: 120, previewSeatRole: '小盲', previewStatus: '在局中', handName: '一对' },
+    { username: '阿哲', stack: 3150, roundBet: 240, previewSeatRole: '大盲', previewStatus: '等待操作', handName: '顺子' },
+    { username: 'NovaPlayer', stack: 880, roundBet: 0, previewStatus: '已弃牌', handName: '未揭晓', folded: true },
+    { username: '雨落无声', stack: 5420, roundBet: 240, previewStatus: '在局中', handName: '同花' },
+    { username: 'Kiki', stack: 1260, roundBet: 240, previewStatus: '重连中', handName: '未揭晓', disconnectedAt: Date.now() },
+    { username: '陈北', stack: 720, roundBet: 0, previewStatus: '等待中', handName: '未揭晓' },
+    { username: 'Ace_007', stack: 4040, roundBet: 240, previewStatus: '本局结束后下桌', handName: '葫芦', leaveAfterHand: true },
+  ];
+  const playersToRender = table.players.length ? table.players : previewPlayers;
+  const isPreview = !table.players.length;
   const turnPlayer = table.players[table.turn];
   $('table-info').textContent = `${table.players.length}/${table.maxPlayers} 人在桌 · ${table.phase}`;
   $('join').disabled = Boolean(me);
@@ -255,16 +267,17 @@ function render() {
   chatHistory.scrollTop = chatHistory.scrollHeight;
   $('board').innerHTML = table.board.length ? table.board.map(card).join('') : '<span class="empty-board">公共牌将在翻牌圈出现</span>';
   $('turn-status').innerHTML = table.resultDeadline ? '<span class="turn-label" id="result-clock"></span>' : turnPlayer ? '' : '<span class="turn-label">等待发牌</span>';
-  $('players').innerHTML = table.players.map((player, index) => {
-    const relativeIndex = myIndex < 0 ? index : (index - myIndex + table.players.length) % table.players.length;
-    const seat = seatLayouts[table.players.length][relativeIndex];
-    const timeoutInfo = player.timeoutStreak ? `超时 ${player.timeoutStreak}/3 · ` : '';
-    const status = player.disconnectedAt ? '重连中（保留座位）' : player.leaveAfterHand ? '本局结束后下桌' : player.folded ? '已弃牌' : player.inHand ? `本轮 ${player.roundBet}` : '等待中';
-    const handStrength = player.handName ? `<div class="hand-strength">牌力：${player.handName}</div>` : '';
-    const showdownCards = player.cards?.length && table.showdownPlayerIds?.includes(player.userId) ? `<div class="showdown-cards" aria-label="${player.username} 的摊牌">${player.cards.map(card).join('')}</div>` : '';
+  $('players').innerHTML = playersToRender.map((player, index) => {
+    const relativeIndex = myIndex < 0 ? index : (index - myIndex + playersToRender.length) % playersToRender.length;
+    const seat = seatLayouts[playersToRender.length][relativeIndex];
+    const seatRole = player.previewSeatRole || [table.dealer === index ? '庄家' : '', player.blind === 'small' ? '小盲' : '', player.blind === 'big' ? '大盲' : ''].filter(Boolean).join(' · ') || '—';
+    const seatLabel = `#${seat + 1}${seatRole === '—' ? '' : ` · ${seatRole}`}`;
+    const playerStatus = player.previewStatus || [player.disconnectedAt ? '重连中' : player.leaveAfterHand ? '本局结束后下桌' : player.folded ? '已弃牌' : player.inHand ? '在局中' : '等待中', player.timeoutStreak ? `超时 ${player.timeoutStreak}/3` : ''].filter(Boolean).join(' · ');
+    const isShowdown = !isPreview && Boolean(player.cards?.length && table.showdownPlayerIds?.includes(player.userId));
+    const showdownCards = isShowdown ? `<div class="showdown-cards" aria-label="${player.username} 的摊牌">${player.cards.map(card).join('')}</div>` : '';
     const emote = activeEmotes.get(player.userId)?.emote;
     const voice = activeVoices.get(player.userId)?.text;
-    return `<article class="player seat-${seat} ${table.turn === index ? 'turn' : ''} ${player.folded ? 'folded' : ''} ${player.disconnectedAt ? 'offline' : ''}">${table.turn === index ? '<strong class="seat-timer" id="turn-clock"></strong>' : ''}${emote ? `<span class="emote-bubble" aria-label="${player.username} 发送表情">${emote}</span>` : ''}${voice ? `<span class="voice-bubble" aria-label="${player.username} 发送语音">${voice}</span>` : ''}<div class="avatar">${player.username.slice(0, 1).toUpperCase()}</div><div><b>${player.username}</b>${table.dealer === index ? '<span class="dealer">D</span>' : ''}<div class="stack">● ${player.stack}</div><small>${timeoutInfo}${status}</small>${handStrength}</div>${showdownCards}</article>`;
+    return `<article class="player seat-${seat} ${table.turn === index ? 'turn' : ''} ${player.folded ? 'folded' : ''} ${player.disconnectedAt ? 'offline' : ''} ${isShowdown ? 'showdown' : ''} ${isPreview ? 'preview-player' : ''}">${table.turn === index ? '<strong class="seat-timer" id="turn-clock"></strong>' : ''}${emote ? `<span class="emote-bubble" aria-label="${player.username} 发送表情">${emote}</span>` : ''}${voice ? `<span class="voice-bubble" aria-label="${player.username} 发送语音">${voice}</span>` : ''}<div class="player-summary"><b class="player-name" title="${player.username}">${player.username}</b><span class="seat-role" title="${seatLabel}">${seatLabel}</span><div class="player-stat stack" title="总筹码：${player.stack}"><b>${player.stack}</b></div><div class="player-stat round-bet" title="本轮筹码：${player.roundBet}"><b>${player.roundBet}</b></div><span class="player-status" title="${playerStatus}">${playerStatus}</span><span class="player-hand-strength" title="${player.handName || '未揭晓'}">${player.handName || '未揭晓'}</span></div>${showdownCards}</article>`;
   }).join('');
   $('self').innerHTML = me ? `<div><span>你的筹码</span><b class="my-stack">${me.stack}</b>${me.handName ? `<div class="hand-strength">牌力：${me.handName}</div>` : ''}</div><div class="cards hand">${(me.cards || []).map(card).join('') || '<span>等待发牌</span>'}</div>` : '<span>入座后即可看到你的手牌</span>';
   $('actions').innerHTML = actionControls(me);

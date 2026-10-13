@@ -228,7 +228,8 @@ function scheduleTurnTimer(table) {
 function postBlinds(table) {
   const seated = table.players.filter(p => p.stack > 0); table.dealer = nextIndex(table, table.dealer, p => seated.includes(p));
   const sb = nextIndex(table, table.dealer, p => seated.includes(p)); const bb = nextIndex(table, sb, p => seated.includes(p));
-  [[sb, table.smallBlind], [bb, table.bigBlind]].forEach(([index, amount]) => { const p = table.players[index]; const bet = Math.min(p.stack, amount); p.stack -= bet; p.roundBet = bet; p.totalBet = bet; table.pot += bet; });
+  table.players.forEach(player => { player.blind = null; });
+  [[sb, table.smallBlind, 'small'], [bb, table.bigBlind, 'big']].forEach(([index, amount, blind]) => { const p = table.players[index]; p.blind = blind; const bet = Math.min(p.stack, amount); p.stack -= bet; p.roundBet = bet; p.totalBet = bet; table.pot += bet; });
   table.turn = nextIndex(table, bb, p => p.inHand && !p.folded && p.stack > 0);
 }
 function startHand(table) {
@@ -245,7 +246,7 @@ function startHand(table) {
   }
   if (table.resultDeadline) throw new Error('正在展示上一局结果，请稍候');
   table.deck = makeDeck(); table.board = []; table.pot = 0; table.phase = 'preflop'; table.resultDeadline = null; table.showdownOpen = false; table.showdownPlayerIds = []; table.message = '翻牌前下注';
-  table.players.forEach(p => Object.assign(p, { cards: [table.deck.pop(), table.deck.pop()], inHand: p.stack > 0, folded: false, roundBet: 0, totalBet: 0, acted: false, handName: null }));
+  table.players.forEach(p => Object.assign(p, { cards: [table.deck.pop(), table.deck.pop()], inHand: p.stack > 0, folded: false, roundBet: 0, totalBet: 0, acted: false, blind: null, handName: null }));
   postBlinds(table); scheduleTurnTimer(table); logHand(table, 'start'); broadcast(table);
 }
 function revealNext(table) {
@@ -278,10 +279,10 @@ function showdown(table) {
     return `${index ? `边池 ${index}` : '主池'} ${pot.amount}：${winners.map(player => player.username).join('、')}（${handName[high[0]]}）`;
   });
   table.message = payoutSummary.join('；');
-  // During the result display, every participant can choose to reveal their
-  // own hole cards. Do not reveal contenders automatically.
+  // Contenders reveal automatically at showdown; folded players may still
+  // choose to reveal their own hole cards during the result display.
   table.showdownOpen = true;
-  table.showdownPlayerIds = [];
+  table.showdownPlayerIds = contenders.map(player => player.userId);
   table.phase = 'waiting'; table.turn = -1; beginResultDisplay(table); logHand(table, { pots: payoutSummary }); broadcast(table);
 }
 function settleIfNeeded(table) {
