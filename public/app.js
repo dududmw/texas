@@ -124,6 +124,7 @@ function auth() {
 function send(message) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ ...message, tableId: 'main' })); }
 function doAction(action, amount) { send({ type: 'action', action, amount }); }
 function quickRaise(amount) { const input = $('raise'); if (input) input.value = amount; doAction('raise', amount); }
+function quickRebuy() { const amount = Math.min(1000, Math.max(0, user?.points || 0)); if (amount) { const input = $('rebuy'); if (input) input.value = amount; doAction('rebuy', amount); } }
 function sendChat() { const input = $('chat-input'); const text = input?.value.trim(); if (!text) return; send({ type: 'chat', text }); input.value = ''; }
 function toggleEmotePicker() { emotePickerOpen = !emotePickerOpen; render(); }
 function sendEmote(emote) { emotePickerOpen = false; send({ type: 'emote', emote }); render(); }
@@ -198,25 +199,30 @@ function updateCountdown() {
 }
 
 function actionControls(me) {
-  const rebuy = me?.stack < 200 ? `<label>补充筹码（1–2000）<input id="rebuy" type="number" min="1" max="2000" value="1000"></label><button class="secondary" onclick="doAction('rebuy', +$('rebuy').value)">确认补充</button>` : '';
   const emoteChoices = [['😏', '得意'], ['😂', '大笑'], ['🤔', '思考'], ['🔥', '火力全开'], ['💀', '翻车'], ['😎', '淡定'], ['🤡', '小丑'], ['😭', '哭了'], ['😡', '生气'], ['👀', '围观'], ['🙏', '拜托'], ['😴', '困了'], ['🎯', '命中'], ['👏', '鼓掌'], ['🍀', '好运'], ['🎲', '骰子']];
-  const emotes = me ? `<div class="emote-picker"><button class="secondary" onclick="toggleEmotePicker()" aria-expanded="${emotePickerOpen}">😀 表情</button>${emotePickerOpen ? `<div class="emote-popup" role="dialog" aria-label="选择表情">${emoteChoices.map(([emote, label]) => `<button onclick="sendEmote('${emote}')" title="${label}" aria-label="${label}">${emote}</button>`).join('')}</div>` : ''}</div>` : '';
   const voiceChoices = [['fold', '不要了'], ['calm', '冷静'], ['shove', '推了'], ['call', '跟了']];
-  const voices = me ? `<div class="voice-picker"><button class="secondary" onclick="toggleVoicePicker()" aria-expanded="${voicePickerOpen}">🔊 语音</button>${voicePickerOpen ? `<div class="voice-popup" role="dialog" aria-label="选择语音">${voiceChoices.map(([voice, label]) => `<button onclick="sendVoice('${voice}')">${label}</button>`).join('')}</div>` : ''}</div>` : '';
-  if (table.resultDeadline && table.resultDeadline > Date.now()) {
-    const canShowdown = me?.cards?.length && table.showdownOpen && !table.showdownPlayerIds?.includes(user.id);
-    return `${rebuy}${emotes}${voices}${canShowdown ? '<button class="primary" onclick="doAction(\'showdown\')">摊牌</button>' : ''}<span class="waiting-action">正在展示本局结果…</span>`;
-  }
-  if (table.phase === 'waiting' && me) return `${rebuy}${emotes}${voices}<button class="primary" onclick="doAction('start')">发牌开始下一局</button>`;
+  const resultOpen = Boolean(table.resultDeadline && table.resultDeadline > Date.now());
+  const waiting = table.phase === 'waiting';
   const isMine = me && table.turn >= 0 && table.players[table.turn]?.userId === user.id;
-  if (!isMine) return `${emotes}${voices}<span class="waiting-action">等待其他玩家操作…</span>`;
-  const maxBet = Math.max(...table.players.filter(player => player.inHand && !player.folded).map(player => player.roundBet));
-  const call = maxBet - me.roundBet;
+  const maxBet = Math.max(0, ...table.players.filter(player => player.inHand && !player.folded).map(player => player.roundBet));
+  const call = me ? Math.max(0, maxBet - me.roundBet) : 0;
   const minRaise = maxBet + table.bigBlind;
-  const twoBigBlinds = maxBet + table.bigBlind * 2;
-  const potRaise = Math.min(me.roundBet + me.stack, maxBet + Math.max(table.pot, table.bigBlind));
-  const canRaise = me.stack > call;
-  return `${emotes}${voices}<div class="main-actions"><button class="danger" onclick="doAction('fold')">弃牌</button>${call === 0 ? '<button onclick="doAction(\'check\')">过牌</button>' : `<button onclick="doAction('call')">跟注 ${call}</button>`}<button class="all-in" onclick="doAction('allin')">全下 ${me.stack}</button></div>${canRaise ? `<div class="raise-actions"><button class="secondary" onclick="quickRaise(${minRaise})">最小加注 ${minRaise}</button><button class="secondary" onclick="quickRaise(${Math.min(me.roundBet + me.stack, twoBigBlinds)})">+2BB</button><button class="secondary" onclick="quickRaise(${potRaise})">底池加注</button><label>总下注<input id="raise" type="number" min="${minRaise}" max="${me.roundBet + me.stack}" value="${minRaise}"></label><button onclick="doAction('raise', +$('raise').value)">确认加注</button></div>` : ''}`;
+  const stack = me?.stack ?? 0;
+  const canAct = Boolean(isMine && !resultOpen);
+  const canRaise = canAct && stack > call;
+  const canRebuy = Boolean(me && waiting && stack < 200 && user.points > 0);
+  const canStart = Boolean(me && waiting && !resultOpen && table.players.filter(player => player.stack > 0).length >= 2);
+  const canShowdown = Boolean(me?.cards?.length && table.showdownOpen && resultOpen && !table.showdownPlayerIds?.includes(user.id));
+  const canCommunicate = Boolean(me);
+  const disabled = allowed => allowed ? '' : ' disabled aria-disabled="true"';
+  const maxRaise = (me?.roundBet ?? 0) + stack;
+  const raiseTarget = amount => Math.min(maxRaise, Math.max(minRaise, Math.floor(amount)));
+  const bigBlindRaise = multiplier => raiseTarget(maxBet + table.bigBlind * multiplier);
+  const potSize = Math.max(table.pot, table.bigBlind);
+  const potRaise = multiplier => raiseTarget(maxBet + potSize * multiplier);
+  const emotes = `<div class="emote-picker"><button class="secondary" onclick="toggleEmotePicker()" aria-expanded="${emotePickerOpen}"${disabled(canCommunicate)}>😀 表情</button>${emotePickerOpen && canCommunicate ? `<div class="emote-popup" role="dialog" aria-label="选择表情">${emoteChoices.map(([emote, label]) => `<button onclick="sendEmote('${emote}')" title="${label}" aria-label="${label}">${emote}</button>`).join('')}</div>` : ''}</div>`;
+  const voices = `<div class="voice-picker"><button class="secondary" onclick="toggleVoicePicker()" aria-expanded="${voicePickerOpen}"${disabled(canCommunicate)}>🔊 语音</button>${voicePickerOpen && canCommunicate ? `<div class="voice-popup" role="dialog" aria-label="选择语音">${voiceChoices.map(([voice, label]) => `<button onclick="sendVoice('${voice}')">${label}</button>`).join('')}</div>` : ''}</div>`;
+  return `<section class="in-game-actions control-zone ${canAct ? 'is-active' : ''}" aria-label="局内操作"><div class="operation-grid"><button class="start-action" onclick="doAction('start')"${disabled(canStart)}>开始</button><button onclick="doAction('showdown')"${disabled(canShowdown)}>摊牌</button>${emotes}${voices}<button onclick="doAction('fold')"${disabled(canAct)}>弃牌</button><button onclick="doAction('check')"${disabled(canAct && call === 0)}>过牌</button><button onclick="doAction('call')"${disabled(canAct && call > 0)}>跟注 ${call}</button><button onclick="doAction('allin')"${disabled(canAct && stack > 0)}>All in</button><button onclick="quickRaise(${bigBlindRaise(1)})"${disabled(canRaise)}>1BB</button><button onclick="quickRaise(${bigBlindRaise(2)})"${disabled(canRaise)}>2BB</button><button onclick="quickRaise(${bigBlindRaise(3)})"${disabled(canRaise)}>3BB</button><button onclick="quickRaise(${bigBlindRaise(5)})"${disabled(canRaise)}>5BB</button><button onclick="quickRaise(${potRaise(.5)})"${disabled(canRaise)}>半池</button><button onclick="quickRaise(${potRaise(1)})"${disabled(canRaise)}>满池</button><button onclick="quickRaise(${potRaise(2)})"${disabled(canRaise)}>2 倍底池</button><button onclick="quickRaise(${potRaise(3)})"${disabled(canRaise)}>3 倍底池</button><label class="raise-input">加注到<input id="raise" type="number" min="${minRaise}" max="${maxRaise}" value="${minRaise}"${disabled(canRaise)}></label><button onclick="doAction('raise', +$('raise').value)"${disabled(canRaise)}>加注</button><label class="rebuy-input">补码到<input id="rebuy" type="number" min="1" max="2000" value="1000"${disabled(canRebuy)}></label><button onclick="doAction('rebuy', +$('rebuy').value)"${disabled(canRebuy)}>补码</button><button onclick="quickRebuy()"${disabled(canRebuy)}>快速补码</button></div></section>`;
 }
 
 function render() {
@@ -238,18 +244,7 @@ function render() {
     5: [4, 3, 1, 7, 5], 6: [4, 3, 2, 0, 6, 5],
     7: [4, 3, 2, 1, 7, 6, 5], 8: [4, 3, 2, 1, 0, 7, 6, 5],
   };
-  const previewPlayers = [
-    { username: '林默', stack: 2480, roundBet: 120, previewSeatRole: '庄家', previewStatus: '在局中', handName: '两对' },
-    { username: 'Mia', stack: 1960, roundBet: 120, previewSeatRole: '小盲', previewStatus: '在局中', handName: '一对' },
-    { username: '阿哲', stack: 3150, roundBet: 240, previewSeatRole: '大盲', previewStatus: '等待操作', handName: '顺子' },
-    { username: 'NovaPlayer', stack: 880, roundBet: 0, previewStatus: '已弃牌', handName: '未揭晓', folded: true },
-    { username: '雨落无声', stack: 5420, roundBet: 240, previewStatus: '在局中', handName: '同花' },
-    { username: 'Kiki', stack: 1260, roundBet: 240, previewStatus: '重连中', handName: '未揭晓', disconnectedAt: Date.now() },
-    { username: '陈北', stack: 720, roundBet: 0, previewStatus: '等待中', handName: '未揭晓' },
-    { username: 'Ace_007', stack: 4040, roundBet: 240, previewStatus: '本局结束后下桌', handName: '葫芦', leaveAfterHand: true },
-  ];
-  const playersToRender = table.players.length ? table.players : previewPlayers;
-  const isPreview = !table.players.length;
+  const playersToRender = table.players;
   const turnPlayer = table.players[table.turn];
   $('table-info').textContent = `${table.players.length}/${table.maxPlayers} 人在桌 · ${table.phase}`;
   $('join').disabled = Boolean(me);
@@ -267,19 +262,23 @@ function render() {
   chatHistory.scrollTop = chatHistory.scrollHeight;
   $('board').innerHTML = table.board.length ? table.board.map(card).join('') : '<span class="empty-board">公共牌将在翻牌圈出现</span>';
   $('turn-status').innerHTML = table.resultDeadline ? '<span class="turn-label" id="result-clock"></span>' : turnPlayer ? '' : '<span class="turn-label">等待发牌</span>';
-  $('players').innerHTML = playersToRender.map((player, index) => {
+  const occupiedSeats = new Set();
+  const playerCards = playersToRender.map((player, index) => {
     const relativeIndex = myIndex < 0 ? index : (index - myIndex + playersToRender.length) % playersToRender.length;
     const seat = seatLayouts[playersToRender.length][relativeIndex];
-    const seatRole = player.previewSeatRole || [table.dealer === index ? '庄家' : '', player.blind === 'small' ? '小盲' : '', player.blind === 'big' ? '大盲' : ''].filter(Boolean).join(' · ') || '—';
-    const seatLabel = `#${seat + 1}${seatRole === '—' ? '' : ` · ${seatRole}`}`;
+    occupiedSeats.add(seat);
+    const seatRole = [table.dealer === index ? '庄' : '', player.blind === 'small' ? '小' : '', player.blind === 'big' ? '大' : ''].filter(Boolean).join(' · ');
     const playerStatus = player.previewStatus || [player.disconnectedAt ? '重连中' : player.leaveAfterHand ? '本局结束后下桌' : player.folded ? '已弃牌' : player.inHand ? '在局中' : '等待中', player.timeoutStreak ? `超时 ${player.timeoutStreak}/3` : ''].filter(Boolean).join(' · ');
-    const isShowdown = !isPreview && Boolean(player.cards?.length && table.showdownPlayerIds?.includes(player.userId));
+    const isShowdown = Boolean(player.cards?.length && table.showdownPlayerIds?.includes(player.userId));
     const showdownCards = isShowdown ? `<div class="showdown-cards" aria-label="${player.username} 的摊牌">${player.cards.map(card).join('')}</div>` : '';
     const emote = activeEmotes.get(player.userId)?.emote;
     const voice = activeVoices.get(player.userId)?.text;
-    return `<article class="player seat-${seat} ${table.turn === index ? 'turn' : ''} ${player.folded ? 'folded' : ''} ${player.disconnectedAt ? 'offline' : ''} ${isShowdown ? 'showdown' : ''} ${isPreview ? 'preview-player' : ''}">${table.turn === index ? '<strong class="seat-timer" id="turn-clock"></strong>' : ''}${emote ? `<span class="emote-bubble" aria-label="${player.username} 发送表情">${emote}</span>` : ''}${voice ? `<span class="voice-bubble" aria-label="${player.username} 发送语音">${voice}</span>` : ''}<div class="player-summary"><b class="player-name" title="${player.username}">${player.username}</b><span class="seat-role" title="${seatLabel}">${seatLabel}</span><div class="player-stat stack" title="总筹码：${player.stack}"><b>${player.stack}</b></div><div class="player-stat round-bet" title="本轮筹码：${player.roundBet}"><b>${player.roundBet}</b></div><span class="player-status" title="${playerStatus}">${playerStatus}</span><span class="player-hand-strength" title="${player.handName || '未揭晓'}">${player.handName || '未揭晓'}</span></div>${showdownCards}</article>`;
+    return `<article class="player seat-${seat} ${table.turn === index ? 'turn' : ''} ${player.folded ? 'folded' : ''} ${player.disconnectedAt ? 'offline' : ''} ${isShowdown ? 'showdown' : ''}" data-seat="${seat + 1}">${table.turn === index ? '<strong class="seat-timer" id="turn-clock"></strong>' : ''}${emote ? `<span class="emote-bubble" aria-label="${player.username} 发送表情">${emote}</span>` : ''}${voice ? `<span class="voice-bubble" aria-label="${player.username} 发送语音">${voice}</span>` : ''}<div class="player-summary"><b class="player-name" title="${player.username}">${player.username}</b><span class="seat-role" title="${seatRole}">${seatRole}</span><div class="player-stat stack" title="总筹码：${player.stack}"><b>${player.stack}</b></div><div class="player-stat round-bet" title="本轮筹码：${player.roundBet}"><b>${player.roundBet}</b></div><span class="player-status" title="${playerStatus}">${playerStatus}</span><span class="player-hand-strength" title="${player.handName || '未揭晓'}">${player.handName || '未揭晓'}</span></div>${showdownCards}</article>`;
   }).join('');
-  $('self').innerHTML = me ? `<div><span>你的筹码</span><b class="my-stack">${me.stack}</b>${me.handName ? `<div class="hand-strength">牌力：${me.handName}</div>` : ''}</div><div class="cards hand">${(me.cards || []).map(card).join('') || '<span>等待发牌</span>'}</div>` : '<span>入座后即可看到你的手牌</span>';
+  const emptySeats = Array.from({ length: 8 }, (_, seat) => occupiedSeats.has(seat) ? '' : `<div class="empty-seat seat-${seat}" aria-label="${seat + 1} 号空座位">${seat + 1}</div>`).join('');
+  $('players').innerHTML = `${emptySeats}${playerCards}`;
+  const playerInfo = me ? `<div><span>你的筹码</span><b class="my-stack">${me.stack}</b>${me.handName ? `<div class="hand-strength">牌力：${me.handName}</div>` : ''}</div><div class="cards hand">${(me.cards || []).map(card).join('') || '<span>等待发牌</span>'}</div>` : '<span>入座后即可看到你的手牌</span>';
+  $('self').innerHTML = `<div class="info-content">${playerInfo}</div>`;
   $('actions').innerHTML = actionControls(me);
   updateCountdown();
 }
