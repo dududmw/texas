@@ -113,6 +113,19 @@ const currentHandName = cards => {
 const tables = new Map();
 const defaultTable = { id: 'main', name: '新手牌桌', smallBlind: 10, bigBlind: 20, maxPlayers: 8, players: [], spectators: new Set(), phase: 'waiting', board: [], pot: 0, dealer: -1, turn: -1, deck: [], turnTimer: null, turnDeadline: null, resultTimer: null, resultDeadline: null, showdownOpen: false, showdownPlayerIds: [], chatMessages: [], message: '等待至少两位玩家入座' };
 tables.set(defaultTable.id, defaultTable);
+const leaderboard = () => {
+  const tableChips = new Map();
+  tables.forEach(table => table.players.forEach(player => {
+    const chipsInHand = player.stack + (table.phase === 'waiting' ? 0 : player.totalBet || 0);
+    tableChips.set(player.userId, (tableChips.get(player.userId) || 0) + chipsInHand);
+  }));
+  return db.prepare('SELECT id,username,points FROM users').all().map(account => ({
+    id: account.id,
+    username: account.username,
+    totalChips: account.points + (tableChips.get(account.id) || 0),
+  })).sort((a, b) => b.totalChips - a.totalChips || a.username.localeCompare(b.username));
+};
+app.get('/api/leaderboard', (_req, res) => res.json({ players: leaderboard() }));
 const persist = table => { const { turnTimer, resultTimer, ...snapshot } = table; db.prepare('INSERT INTO game_snapshots(table_id,snapshot,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(table_id) DO UPDATE SET snapshot=excluded.snapshot,updated_at=CURRENT_TIMESTAMP').run(table.id, JSON.stringify({ ...snapshot, spectators: undefined, players: table.players.map(({ socket, reconnectTimer, ...player }) => player) })); };
 const publicTable = (table, userId) => {
   const { turnTimer, resultTimer, ...state } = table;

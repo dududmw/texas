@@ -17,6 +17,8 @@ let wasSeated = false;
 let seatLobby = false;
 let emotePickerOpen = false;
 let voicePickerOpen = false;
+let leaderboardOpen = false;
+let leaderboardPlayers = [];
 const activeEmotes = new Map();
 const activeVoices = new Map();
 const voiceFiles = { fold: '不要了', calm: '冷静', shove: '推了', call: '跟了' };
@@ -125,6 +127,23 @@ function send(message) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.str
 function doAction(action, amount) { send({ type: 'action', action, amount }); }
 function quickRaise(amount) { const input = $('raise'); if (input) input.value = amount; doAction('raise', amount); }
 function quickRebuy() { const amount = Math.min(1000, Math.max(0, user?.points || 0)); if (amount) { const input = $('rebuy'); if (input) input.value = amount; doAction('rebuy', amount); } }
+function renderLeaderboard() {
+  const modal = $('leaderboard-modal');
+  if (!modal) return;
+  modal.hidden = !leaderboardOpen;
+  if (!leaderboardOpen) return;
+  $('leaderboard-list').innerHTML = leaderboardPlayers.length ? leaderboardPlayers.map((player, index) => `<li class="leaderboard-row ${player.id === user?.id ? 'is-self' : ''}"><span class="rank">${index + 1}</span><b>${escapeHtml(player.username)}</b><strong title="总筹码">${player.totalChips}</strong></li>`).join('') : '<li class="leaderboard-empty">暂无玩家数据</li>';
+}
+async function refreshLeaderboard() {
+  try {
+    const response = await fetch('/api/leaderboard');
+    if (!response.ok) throw Error('排行榜加载失败');
+    leaderboardPlayers = (await response.json()).players || [];
+    renderLeaderboard();
+  } catch { leaderboardPlayers = []; renderLeaderboard(); }
+}
+function toggleLeaderboard() { leaderboardOpen = !leaderboardOpen; renderLeaderboard(); if (leaderboardOpen) void refreshLeaderboard(); }
+function closeLeaderboard() { leaderboardOpen = false; renderLeaderboard(); }
 function sendChat() { const input = $('chat-input'); const text = input?.value.trim(); if (!text) return; send({ type: 'chat', text }); input.value = ''; }
 function toggleEmotePicker() { emotePickerOpen = !emotePickerOpen; render(); }
 function sendEmote(emote) { emotePickerOpen = false; send({ type: 'emote', emote }); render(); }
@@ -280,6 +299,8 @@ function render() {
   const playerInfo = me ? `<div><span>你的筹码</span><b class="my-stack">${me.stack}</b>${me.handName ? `<div class="hand-strength">牌力：${me.handName}</div>` : ''}</div><div class="cards hand">${(me.cards || []).map(card).join('') || '<span>等待发牌</span>'}</div>` : '<span>入座后即可看到你的手牌</span>';
   $('self').innerHTML = `<div class="info-content">${playerInfo}</div>`;
   $('actions').innerHTML = actionControls(me);
+  renderLeaderboard();
+  if (leaderboardOpen) void refreshLeaderboard();
   updateCountdown();
 }
 
@@ -287,6 +308,10 @@ function render() {
 $('join').onclick = () => { seatLobby = false; send({ type: 'join' }); };
 $('leave').onclick = () => send({ type: 'action', action: 'leave_after_hand' });
 $('spectate').onclick = () => { seatLobby = false; send({ type: 'spectate' }); };
+$('leaderboard').onclick = toggleLeaderboard;
+$('leaderboard-close').onclick = closeLeaderboard;
+$('leaderboard-modal').onclick = event => { if (event.target === $('leaderboard-modal')) closeLeaderboard(); };
+$('leaderboard-modal').onkeydown = event => { if (event.key === 'Escape') closeLeaderboard(); };
 $('chat-send').onclick = sendChat;
 $('chat-input').onkeydown = event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); sendChat(); } };
 $('music').onclick = () => { void toggleMusic(); };
