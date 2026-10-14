@@ -17,7 +17,17 @@ const RESULT_DISPLAY_MS = 10_000;
 const RECONNECT_GRACE_MS = 60_000;
 const WS_HEARTBEAT_MS = 30_000;
 const EMOTES = new Set(['😏', '😂', '🤔', '🔥', '💀', '😎', '🤡', '😭', '😡', '👀', '🙏', '😴', '🎯', '👏', '🍀', '🎲']);
-const VOICE_LINES = new Set(['fold', 'calm', 'shove', 'call']);
+const VOICE_LINES = new Set([
+  'fold', 'calm', 'shove', 'call',
+  'seerCalm', 'seerWatchCards', 'seerCall', 'seerShove',
+  'seerAllIn', 'seerMars', 'seerGift', 'seerFlower',
+]);
+const SEER_VOICE_LINES = new Set([
+  'seerCalm', 'seerWatchCards', 'seerCall', 'seerShove',
+  'seerAllIn', 'seerMars', 'seerGift', 'seerFlower',
+]);
+const SEER_VOICE_COST = 20;
+const SEER_ACCOUNT_USERNAME = '先知002';
 const db = new Database(path.join(__dirname, 'texas.sqlite'));
 db.pragma('journal_mode = WAL');
 db.exec(`
@@ -172,7 +182,36 @@ function sendVoice(table, userId, voice) {
   if (!VOICE_LINES.has(voice)) throw new Error('不支持的语音');
   const now = Date.now();
   if (now - (player.lastVoiceAt || 0) < 3_000) return;
+  let seerVoicePayment;
+  if (SEER_VOICE_LINES.has(voice)) {
+    seerVoicePayment = db.transaction(() => {
+      const sender = db.prepare('SELECT points FROM users WHERE id=?').get(userId);
+      if (!sender || sender.points < SEER_VOICE_COST) throw new Error(`积分不足，发送先知语音需要 ${SEER_VOICE_COST} 积分`);
+
+      db.prepare('UPDATE users SET points=points-? WHERE id=?').run(SEER_VOICE_COST, userId);
+      db.prepare('INSERT INTO wallet_transactions(user_id,amount,reason) VALUES(?,?,?)').run(userId, -SEER_VOICE_COST, '使用先知语音包');
+
+      const seerAccount = db.prepare('SELECT id FROM users WHERE username=?').get(SEER_ACCOUNT_USERNAME);
+      if (seerAccount) {
+        db.prepare('UPDATE users SET points=points+? WHERE id=?').run(10, seerAccount.id);
+        db.prepare('INSERT INTO wallet_transactions(user_id,amount,reason) VALUES(?,?,?)').run(seerAccount.id, 10, '先知语音包收益');
+      }
+
+      return {
+        senderPoints: db.prepare('SELECT points FROM users WHERE id=?').get(userId).points,
+        seerAccountId: seerAccount?.id,
+        seerAccountPoints: seerAccount && db.prepare('SELECT points FROM users WHERE id=?').get(seerAccount.id).points,
+      };
+    })();
+  }
   player.lastVoiceAt = now;
+  if (seerVoicePayment && player.socket?.readyState === 1) player.socket.send(JSON.stringify({ type: 'balance', points: seerVoicePayment.senderPoints }));
+  if (seerVoicePayment?.seerAccountId && seerVoicePayment.seerAccountId !== userId) {
+    const seerPlayer = table.players.find(item => item.userId === seerVoicePayment.seerAccountId);
+    const seerSpectator = [...table.spectators].find(item => item.userId === seerVoicePayment.seerAccountId);
+    const seerSocket = seerPlayer?.socket || seerSpectator?.socket;
+    if (seerSocket?.readyState === 1) seerSocket.send(JSON.stringify({ type: 'balance', points: seerVoicePayment.seerAccountPoints }));
+  }
   const message = JSON.stringify({ type: 'voice', userId, voice });
   for (const client of [...table.players, ...table.spectators]) if (client.socket?.readyState === 1) client.socket.send(message);
 }

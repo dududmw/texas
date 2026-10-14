@@ -21,7 +21,20 @@ let leaderboardOpen = false;
 let leaderboardPlayers = [];
 const activeEmotes = new Map();
 const activeVoices = new Map();
-const voiceFiles = { fold: '不要了', calm: '冷静', shove: '推了', call: '跟了' };
+const voiceFiles = {
+  fold: '不要了',
+  calm: '冷静',
+  shove: '推了',
+  call: '跟了',
+  seerCalm: '先知_要冷静',
+  seerWatchCards: '先知_看看牌',
+  seerCall: '先知_你跟不跟',
+  seerShove: '先知_我推你后手',
+  seerAllIn: '先知_All了',
+  seerMars: '先知_火星撞地球',
+  seerGift: '先知_送你点',
+  seerFlower: '先知_听花当成牌',
+};
 
 const card = value => {
   if (!value) return '';
@@ -219,7 +232,13 @@ function updateCountdown() {
 
 function actionControls(me) {
   const emoteChoices = [['😏', '得意'], ['😂', '大笑'], ['🤔', '思考'], ['🔥', '火力全开'], ['💀', '翻车'], ['😎', '淡定'], ['🤡', '小丑'], ['😭', '哭了'], ['😡', '生气'], ['👀', '围观'], ['🙏', '拜托'], ['😴', '困了'], ['🎯', '命中'], ['👏', '鼓掌'], ['🍀', '好运'], ['🎲', '骰子']];
-  const voiceChoices = [['fold', '不要了'], ['calm', '冷静'], ['shove', '推了'], ['call', '跟了']];
+  const voiceChoices = [
+    ['fold', '不要了'], ['calm', '冷静'], ['shove', '推了'], ['call', '跟了'],
+    ['seerCalm', '先知·要冷静（20 积分）'], ['seerWatchCards', '先知·看看牌（20 积分）'],
+    ['seerCall', '先知·你跟不跟（20 积分）'], ['seerShove', '先知·我推你后手（20 积分）'],
+    ['seerAllIn', '先知·All 了（20 积分）'], ['seerMars', '先知·火星撞地球（20 积分）'],
+    ['seerGift', '先知·送你点（20 积分）'], ['seerFlower', '先知·听花当成牌（20 积分）'],
+  ];
   const resultOpen = Boolean(table.resultDeadline && table.resultDeadline > Date.now());
   const waiting = table.phase === 'waiting';
   const isMine = me && table.turn >= 0 && table.players[table.turn]?.userId === user.id;
