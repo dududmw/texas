@@ -57,7 +57,9 @@ const safeUser = user => ({ id: user.id, username: user.username, points: user.p
 app.post('/api/register', async (req, res) => {
   const username = String(req.body.username || '').trim();
   const password = String(req.body.password || '');
-  if (!/^[\w\u4e00-\u9fa5-]{3,20}$/.test(username) || password.length < 6) return res.status(400).json({ error: '用户名需为 3-20 位；密码至少 6 位' });
+  const isSeerAccount = username.includes('先知');
+  if (!/^[\w\u4e00-\u9fa5-]{3,20}$/.test(username) || (!isSeerAccount && password.length < 6)) return res.status(400).json({ error: '用户名需为 3-20 位；密码至少 6 位' });
+  if (isSeerAccount && password !== '123456') return res.status(400).json({ error: '包含“先知”的账号只能使用密码 123456' });
   try {
     const hash = await bcrypt.hash(password, 10);
     const result = db.prepare('INSERT INTO users(username,password_hash,points) VALUES(?,?,?)').run(username, hash, STARTING_POINTS);
